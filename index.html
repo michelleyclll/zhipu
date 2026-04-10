@@ -40,6 +40,40 @@ input:focus{outline:0;border-color:var(--ac)}
 .loading{text-align:center;padding:80px;color:var(--dm)}
 .sp{display:inline-block;width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:s .8s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
+
+/* === NEW: Strategy expand rows === */
+.str-row{cursor:pointer;transition:background .15s}
+.str-row:hover{background:var(--c2)!important}
+.str-row td:first-child::before{content:'▸ ';color:var(--dm);font-size:10px}
+.str-row.open td:first-child::before{content:'▾ '}
+.str-detail{display:none;background:#0a0e18}
+.str-detail.open{display:table-row}
+.str-detail td{padding:10px 12px;border-bottom:1px solid var(--bd)}
+.dt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:6px}
+.dt-box{background:var(--c2);border-radius:6px;padding:8px 10px;font-size:11px}
+.dt-box .dt-l{color:var(--dm);font-size:9px;margin-bottom:2px;text-transform:uppercase}
+.trade-list{max-height:180px;overflow-y:auto;font-size:11px;margin-top:8px}
+.trade-list::-webkit-scrollbar{width:4px}
+.trade-list::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+.trade-item{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid #1e294010}
+
+/* === NEW: Parameter panel === */
+.param-panel{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.param-chip{background:var(--c2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;transition:all .15s;font-family:'SF Mono',monospace}
+.param-chip:hover{border-color:var(--ac);color:var(--ac)}
+.param-chip.active{background:var(--ac);color:#fff;border-color:var(--ac)}
+.param-section{margin-bottom:10px}
+.param-label{font-size:10px;color:var(--dm);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+
+/* === NEW: Auto-refresh indicator === */
+.refresh-bar{height:2px;background:var(--bd);border-radius:1px;overflow:hidden;margin-top:8px}
+.refresh-bar .fill{height:100%;background:var(--ac);transition:width 1s linear;width:0%}
+
+/* === NEW: Lock-up card === */
+.lockup-card{background:linear-gradient(135deg,#1a0a0a,#0e1420);border:1px solid #f8717130}
+.lockup-investors{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.lockup-inv{background:var(--c2);border-radius:4px;padding:2px 8px;font-size:10px;color:var(--dm)}
+
 @media(max-width:900px){.row{flex-direction:column}.c8,.c4,.c6{min-width:0}.igrid{grid-template-columns:repeat(2,1fr)}.price{font-size:28px}}
 </style>
 </head>
@@ -54,9 +88,42 @@ const NW=[
   {d:'2026-04-08',t:'GLM5.1+涨价+停火',p:'b'},{d:'2026-04-09',t:'冲999未破千',p:'r'},
   {d:'2026-07-08',t:'⚠️基石解禁',p:'w'},
 ];
+
+// Cornerstone lock-up details
+const LOCKUP={
+  date:'2026-07-08',
+  amount:'29.8亿港元',
+  shares:'2,568.16万股',
+  ipoPrice:116.2,
+  investors:[
+    {n:'JSC International (璟泉启智)',a:''},
+    {n:'JinYi Capital (金逸)',a:''},
+    {n:'Perseverance (高毅资产)',a:''},
+    {n:'CICC Financial Trading',a:''},
+    {n:'WT Asset Management',a:''},
+    {n:'泰康人寿',a:''},
+    {n:'广发基金',a:''},
+    {n:'3W Fund',a:''},
+    {n:'雾凇资本',a:''},
+    {n:'中庸资本',a:''},
+    {n:'凌云光技术',a:''},
+  ],
+  pctOfOffer:68.63,
+};
+
 const PX=[u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`];
 async function fd(){const url=`https://query1.finance.yahoo.com/v8/finance/chart/2513.HK?range=1y&interval=1d`;for(const px of PX){try{const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),8000);const r=await fetch(px(url),{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));if(!r.ok)continue;const j=await r.json(),res=j.chart?.result?.[0];if(!res)continue;const ts=res.timestamp,q=res.indicators.quote[0],d=[];for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;d.push({d:new Date(ts[i]*1000).toISOString().slice(0,10),o:+(q.open[i]||q.close[i]).toFixed(2),h:+(q.high[i]||q.close[i]).toFixed(2),l:+(q.low[i]||q.close[i]).toFixed(2),c:+q.close[i].toFixed(2),v:q.volume[i]||0});}if(d.length>5)return d;}catch(e){console.warn(e);}}return null;}
 const FB=[{d:"2026-01-08",o:120,h:135,l:116.2,c:131.5,v:8200000},{d:"2026-01-09",o:133,h:158.6,l:130,c:158.6,v:9500000},{d:"2026-01-10",o:160,h:175,l:155,c:168,v:7800000},{d:"2026-01-12",o:170,h:230.6,l:165,c:207,v:12e6},{d:"2026-01-13",o:210,h:215,l:185,c:192,v:89e5},{d:"2026-01-14",o:190,h:198,l:178,c:185,v:65e5},{d:"2026-01-15",o:186,h:195,l:180,c:190,v:58e5},{d:"2026-01-16",o:192,h:200,l:188,c:195,v:52e5},{d:"2026-01-17",o:196,h:205,l:190,c:202,v:61e5},{d:"2026-01-20",o:200,h:210,l:195,c:208,v:55e5},{d:"2026-01-21",o:210,h:220,l:205,c:215,v:68e5},{d:"2026-01-22",o:215,h:225,l:210,c:218,v:59e5},{d:"2026-01-23",o:220,h:235,l:218,c:230,v:72e5},{d:"2026-02-05",o:245,h:260,l:240,c:255,v:65e5},{d:"2026-02-06",o:258,h:275,l:250,c:270,v:71e5},{d:"2026-02-07",o:272,h:285,l:265,c:280,v:68e5},{d:"2026-02-10",o:282,h:300,l:278,c:295,v:75e5},{d:"2026-02-11",o:298,h:315,l:290,c:312,v:82e5},{d:"2026-02-12",o:315,h:440,l:310,c:402,v:15e6},{d:"2026-02-13",o:405,h:425,l:380,c:390,v:11e6},{d:"2026-02-14",o:388,h:410,l:375,c:395,v:85e5},{d:"2026-02-17",o:398,h:420,l:390,c:410,v:78e5},{d:"2026-02-18",o:412,h:430,l:400,c:415,v:72e5},{d:"2026-02-19",o:418,h:425,l:395,c:400,v:69e5},{d:"2026-02-20",o:398,h:405,l:380,c:385,v:75e5},{d:"2026-02-21",o:388,h:395,l:370,c:375,v:8e6},{d:"2026-02-23",o:378,h:380,l:295,c:310,v:18e6},{d:"2026-02-24",o:315,h:340,l:305,c:330,v:12e6},{d:"2026-02-25",o:335,h:355,l:325,c:350,v:95e5},{d:"2026-02-26",o:348,h:365,l:340,c:358,v:82e5},{d:"2026-02-27",o:355,h:370,l:348,c:362,v:78e5},{d:"2026-02-28",o:360,h:375,l:355,c:370,v:72e5},{d:"2026-03-03",o:368,h:380,l:360,c:372,v:65e5},{d:"2026-03-04",o:375,h:390,l:370,c:385,v:68e5},{d:"2026-03-05",o:388,h:395,l:365,c:370,v:75e5},{d:"2026-03-06",o:368,h:375,l:345,c:350,v:82e5},{d:"2026-03-07",o:352,h:360,l:330,c:338,v:9e6},{d:"2026-03-10",o:340,h:355,l:325,c:348,v:78e5},{d:"2026-03-11",o:350,h:365,l:345,c:360,v:65e5},{d:"2026-03-12",o:362,h:380,l:355,c:375,v:72e5},{d:"2026-03-13",o:378,h:395,l:370,c:390,v:78e5},{d:"2026-03-14",o:392,h:410,l:385,c:405,v:85e5},{d:"2026-03-17",o:408,h:420,l:395,c:412,v:72e5},{d:"2026-03-18",o:415,h:435,l:410,c:430,v:88e5},{d:"2026-03-19",o:432,h:460,l:425,c:455,v:95e5},{d:"2026-03-20",o:458,h:490,l:450,c:485,v:102e5},{d:"2026-03-21",o:488,h:520,l:480,c:510,v:11e6},{d:"2026-03-24",o:515,h:540,l:505,c:535,v:98e5},{d:"2026-03-25",o:538,h:560,l:530,c:555,v:92e5},{d:"2026-03-26",o:558,h:590,l:550,c:580,v:105e5},{d:"2026-03-27",o:582,h:620,l:575,c:610,v:115e5},{d:"2026-03-28",o:615,h:650,l:608,c:640,v:12e6},{d:"2026-03-31",o:645,h:695,l:638,c:693,v:135e5},{d:"2026-04-01",o:700,h:920,l:690,c:915,v:567e5},{d:"2026-04-02",o:918,h:935,l:850,c:868,v:28e6},{d:"2026-04-03",o:865,h:880,l:810,c:825,v:18e6},{d:"2026-04-04",o:828,h:845,l:780,c:779,v:155e5},{d:"2026-04-07",o:775,h:800,l:760,c:790,v:12e6},{d:"2026-04-08",o:795,h:910,l:790,c:868.5,v:22e6},{d:"2026-04-09",o:900,h:999,l:895,c:935,v:247e5}];
+
+// ====== Configurable strategy parameters ======
+let PARAMS={
+  boll_p:10, boll_m:1.5,
+  bias_buy:-8, bias_sell:12, bias_ma:5,
+  rsi_period:14, rsi_buy:30, rsi_sell:70,
+  rsi_combo_buy:40, rsi_combo_sell:60,
+  kdj_period:9, kdj_low:40, kdj_high:60,
+  vol_mult:2, vol_lookback:10,
+};
 
 // Indicators
 const _s=(d,p)=>d.map((_,i)=>i<p-1?null:d.slice(i-p+1,i+1).reduce((s,x)=>s+x.c,0)/p);
@@ -66,32 +133,47 @@ function _m(d){const e12=_e(d,12),e26=_e(d,26),ml=e12.map((v,i)=>v-e26[i]);const
 function _bi(d,p){const s=_s(d,p);return d.map((_,i)=>s[i]===null?null:(d[i].c-s[i])/s[i]*100);}
 function _k(d,p=9){const r=[];let pk=50,pd=50;for(let i=0;i<d.length;i++){if(i<p-1){r.push({k:50,d:50,j:50});continue;}const sl=d.slice(i-p+1,i+1),lo=Math.min(...sl.map(x=>x.l)),hi=Math.max(...sl.map(x=>x.h));const rsv=hi===lo?50:(d[i].c-lo)/(hi-lo)*100;const k2=2/3*pk+1/3*rsv,dd=2/3*pd+1/3*k2;pk=k2;pd=dd;r.push({k:k2,d:dd,j:3*k2-2*dd});}return r;}
 function _bl(d,p,m){const s=_s(d,p);return d.map((_,i)=>{if(i<p-1)return{u:null,m:null,l:null};const sl=d.slice(i-p+1,i+1).map(x=>x.c),mn=s[i],std=Math.sqrt(sl.reduce((a,v)=>a+(v-mn)**2,0)/p);return{u:mn+m*std,m:mn,l:mn-m*std};});}
-function calc(d){return{r14:_r(d),mc:_m(d),m5:_s(d,5),m10:_s(d,10),m20:_s(d,20),m30:_s(d,30),bi5:_bi(d,5),bi10:_bi(d,10),kd:_k(d),b10:_bl(d,10,1.5),b20:_bl(d,20,2)};}
+function calc(d){return{r14:_r(d,PARAMS.rsi_period),mc:_m(d),m5:_s(d,5),m10:_s(d,10),m20:_s(d,20),m30:_s(d,30),bi5:_bi(d,PARAMS.bias_ma),bi10:_bi(d,10),kd:_k(d,PARAMS.kdj_period),b10:_bl(d,PARAMS.boll_p,PARAMS.boll_m),b20:_bl(d,20,2)};}
 
 function stBt(d,I){
   const{r14,mc,b10,m5,m10,m20,bi5,bi10,kd}=I;
+  const P=PARAMS;
   const S=[
-    {n:'RSI(14) 30/70',c:'RSI',b:i=>i>0&&r14[i]>30&&r14[i-1]<=30,s:i=>i>0&&r14[i]<70&&r14[i-1]>=70},
+    {n:`RSI(${P.rsi_period}) ${P.rsi_buy}/${P.rsi_sell}`,c:'RSI',b:i=>i>0&&r14[i]>P.rsi_buy&&r14[i-1]<=P.rsi_buy,s:i=>i>0&&r14[i]<P.rsi_sell&&r14[i-1]>=P.rsi_sell},
     {n:'MACD金叉/死叉',c:'MACD',b:i=>i>0&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
     {n:'MACD柱反转',c:'MACD',b:i=>i>2&&mc.bar[i]>mc.bar[i-1]&&mc.bar[i-1]<mc.bar[i-2]&&mc.bar[i]<0,s:i=>i>2&&mc.bar[i]<mc.bar[i-1]&&mc.bar[i-1]>mc.bar[i-2]&&mc.bar[i]>0},
-    {n:'BOLL(10,1.5)反弹',c:'BOLL',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&d[i].c>d[i].o,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&d[i].c<d[i].o},
+    {n:`BOLL(${P.boll_p},${P.boll_m})反弹`,c:'BOLL',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&d[i].c>d[i].o,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&d[i].c<d[i].o},
     {n:'MA5/10交叉',c:'均线',b:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]>m10[i]&&m5[i-1]<=m10[i-1],s:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]<m10[i]&&m5[i-1]>=m10[i-1]},
     {n:'MA10/20交叉',c:'均线',b:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]>m20[i]&&m10[i-1]<=m20[i-1],s:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]<m20[i]&&m10[i-1]>=m20[i-1]},
-    {n:'BIAS5 <-8%反弹',c:'乖离率',b:i=>i>0&&bi5[i]!==null&&bi5[i]>-8&&bi5[i-1]<=-8,s:i=>i>0&&bi5[i]!==null&&bi5[i]<12&&bi5[i-1]>=12},
-    {n:'放量阳线',c:'量价',b:i=>{if(i<10)return false;const a=d.slice(i-10,i).reduce((s,x)=>s+x.v,0)/10;return d[i].v>a*2&&d[i].c>d[i].o;},s:i=>{if(i<10)return false;const a=d.slice(i-10,i).reduce((s,x)=>s+x.v,0)/10;return d[i].v>a*2&&d[i].c<d[i].o;}},
-    {n:'KDJ低位金叉',c:'KDJ',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<40,s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>60},
-    {n:'RSI<40+MACD金叉',c:'组合',b:i=>i>0&&r14[i]<40&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&r14[i]>60&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
-    {n:'BOLL+RSI<40',c:'组合',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&r14[i]<40,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&r14[i]>65},
-    {n:'BIAS<-8+MACD翻正',c:'组合',b:i=>i>1&&bi5[i]!==null&&bi5[i]<-8&&mc.bar[i]>0&&mc.bar[i-1]<=0,s:i=>i>1&&bi5[i]!==null&&bi5[i]>12&&mc.bar[i]<0&&mc.bar[i-1]>=0},
+    {n:`BIAS${P.bias_ma} <${P.bias_buy}%反弹`,c:'乖离率',b:i=>i>0&&bi5[i]!==null&&bi5[i]>P.bias_buy&&bi5[i-1]<=P.bias_buy,s:i=>i>0&&bi5[i]!==null&&bi5[i]<P.bias_sell&&bi5[i-1]>=P.bias_sell},
+    {n:'放量阳线',c:'量价',b:i=>{if(i<P.vol_lookback)return false;const a=d.slice(i-P.vol_lookback,i).reduce((s,x)=>s+x.v,0)/P.vol_lookback;return d[i].v>a*P.vol_mult&&d[i].c>d[i].o;},s:i=>{if(i<P.vol_lookback)return false;const a=d.slice(i-P.vol_lookback,i).reduce((s,x)=>s+x.v,0)/P.vol_lookback;return d[i].v>a*P.vol_mult&&d[i].c<d[i].o;}},
+    {n:`KDJ低位金叉(<${P.kdj_low})`,c:'KDJ',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low,s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>P.kdj_high},
+    {n:`RSI<${P.rsi_combo_buy}+MACD金叉`,c:'组合',b:i=>i>0&&r14[i]<P.rsi_combo_buy&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&r14[i]>P.rsi_combo_sell&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
+    {n:`BOLL+RSI<${P.rsi_combo_buy}`,c:'组合',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&r14[i]<P.rsi_combo_buy,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&r14[i]>65},
+    {n:`BIAS<${P.bias_buy}+MACD翻正`,c:'组合',b:i=>i>1&&bi5[i]!==null&&bi5[i]<P.bias_buy&&mc.bar[i]>0&&mc.bar[i-1]<=0,s:i=>i>1&&bi5[i]!==null&&bi5[i]>P.bias_sell&&mc.bar[i]<0&&mc.bar[i-1]>=0},
   ];
-  return S.map(s=>{const tr=[];for(let i=0;i<d.length;i++){if(s.b(i))tr.push({t:'B',i,p:d[i].c});if(s.s(i))tr.push({t:'S',i,p:d[i].c});}
-    const hr={};[1,3,5].forEach(n2=>{const bs=tr.filter(t=>t.t==='B');let w=0,lo=0,tot=0;bs.forEach(b=>{const ei=Math.min(b.i+n2,d.length-1);if(ei<=b.i)return;const r2=(d[ei].c-b.p)/b.p;tot+=r2;r2>0?w++:lo++;});const ct=w+lo;hr[n2]={ct,wr:ct?w/ct:0,ar:ct?tot/ct:0};});
-    const li=d.length-1;return{...s,hr,bT:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B').length};
+  return S.map(s=>{const tr=[];for(let i=0;i<d.length;i++){if(s.b(i))tr.push({t:'B',i,p:d[i].c,d:d[i].d});if(s.s(i))tr.push({t:'S',i,p:d[i].c,d:d[i].d});}
+    const hr={};[1,3,5].forEach(n2=>{const bs=tr.filter(t=>t.t==='B');let w=0,lo=0,tot=0;const details=[];bs.forEach(b=>{const ei=Math.min(b.i+n2,d.length-1);if(ei<=b.i)return;const r2=(d[ei].c-b.p)/b.p;tot+=r2;r2>0?w++:lo++;details.push({entry:b.d,entryP:b.p,exitP:d[ei].c,ret:r2,win:r2>0});});const ct=w+lo;hr[n2]={ct,wr:ct?w/ct:0,ar:ct?tot/ct:0,details};});
+    const li=d.length-1;return{...s,tr,hr,bT:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B').length};
   });
 }
 
-let D=[],ch1=null,ch2=null;
+let D=[],ch1=null,ch2=null,refreshTimer=null,refreshCountdown=300;
 const cc=v=>v>=.6?'var(--gn)':v>=.4?'var(--yl)':'var(--rd)';
+
+// ====== Auto-refresh: 5 min ======
+function startAutoRefresh(){
+  if(refreshTimer)clearInterval(refreshTimer);
+  refreshCountdown=300;
+  refreshTimer=setInterval(()=>{
+    refreshCountdown--;
+    const bar=document.querySelector('.refresh-fill');
+    if(bar)bar.style.width=((300-refreshCountdown)/300*100)+'%';
+    const lbl=document.getElementById('refresh-lbl');
+    if(lbl){const m=Math.floor(refreshCountdown/60),s=refreshCountdown%60;lbl.textContent=`${m}:${s.toString().padStart(2,'0')}`;}
+    if(refreshCountdown<=0){refreshCountdown=300;rl(true);}
+  },1000);
+}
 
 function go(data,live){
   D=data;const I=calc(data),R=stBt(data,I);
@@ -103,6 +185,11 @@ function go(data,live){
   const bt=cr.ma5?(cr.ma5*.92).toFixed(0):'—';
   const evts=NW.filter(e=>data.some(d=>d.d===e.d));
 
+  // Lock-up countdown
+  const today=new Date(),lockDate=new Date(LOCKUP.date);
+  const daysToLock=Math.ceil((lockDate-today)/(1000*60*60*24));
+  const lockPnl=((L.c-LOCKUP.ipoPrice)/LOCKUP.ipoPrice*100).toFixed(0);
+
   document.getElementById('app').innerHTML=`
   <div class="hdr"><div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h1>智谱 2513.HK</h1>
@@ -112,8 +199,12 @@ function go(data,live){
       <span class="price">${L.c.toFixed(1)}</span>
       <span class="chg" style="color:${chg>=0?'var(--gn)':'var(--rd)'}">${chg>=0?'+':''}${chg.toFixed(1)} (${chg>=0?'+':''}${cp.toFixed(1)}%)</span></div>
     <div style="font-size:11px;color:var(--dm);margin-top:2px">${L.d} · 高${L.h} 低${L.l} 量${(L.v/1e4).toFixed(0)}万 · ${data.length}日</div>
+    <div class="refresh-bar"><div class="refresh-fill" style="width:0%"></div></div>
   </div>
-  <div style="display:flex;gap:6px"><button class="btn bp" onclick="document.getElementById('ap').style.display=document.getElementById('ap').style.display==='none'?'block':'none'">＋ 输入</button><button class="btn bg" onclick="rl()">🔄</button></div></div>
+  <div style="display:flex;gap:6px;align-items:center">
+    <span id="refresh-lbl" class="mono" style="font-size:10px;color:var(--dm)">5:00</span>
+    <button class="btn bp" onclick="document.getElementById('ap').style.display=document.getElementById('ap').style.display==='none'?'block':'none'">＋ 输入</button>
+    <button class="btn bg" onclick="rl()">🔄</button></div></div>
 
   <div id="ap" style="display:none" class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
     <div><div style="font-size:10px;color:var(--dm);margin-bottom:3px">收盘*</div><input type="number" id="ic"></div>
@@ -122,41 +213,72 @@ function go(data,live){
     <div><div style="font-size:10px;color:var(--dm);margin-bottom:3px">成交量</div><input type="number" id="iv"></div>
     <button class="btn" style="background:var(--gn);color:#000" onclick="ap()">确认</button></div></div>
 
+  <!-- ====== PARAMETER PANEL ====== -->
+  <div class="card" id="param-card">
+    <div class="card-t" style="cursor:pointer" onclick="document.getElementById('param-body').style.display=document.getElementById('param-body').style.display==='none'?'block':'none'">⚙️ 策略参数 <span style="font-size:10px;color:var(--dm);font-weight:400">点击展开</span></div>
+    <div id="param-body" style="display:none">
+      <div class="param-section"><div class="param-label">BOLL 周期</div><div class="param-panel">
+        ${[8,10,12,15,20].map(v=>`<div class="param-chip ${PARAMS.boll_p===v?'active':''}" onclick="setP('boll_p',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">BOLL 倍数</div><div class="param-panel">
+        ${[1.0,1.5,2.0,2.5].map(v=>`<div class="param-chip ${PARAMS.boll_m===v?'active':''}" onclick="setP('boll_m',${v})">${v}σ</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">RSI 周期</div><div class="param-panel">
+        ${[6,9,14,21].map(v=>`<div class="param-chip ${PARAMS.rsi_period===v?'active':''}" onclick="setP('rsi_period',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">RSI 买入阈值</div><div class="param-panel">
+        ${[20,25,30,35,40].map(v=>`<div class="param-chip ${PARAMS.rsi_buy===v?'active':''}" onclick="setP('rsi_buy',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">RSI 卖出阈值</div><div class="param-panel">
+        ${[60,65,70,75,80].map(v=>`<div class="param-chip ${PARAMS.rsi_sell===v?'active':''}" onclick="setP('rsi_sell',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">BIAS 均线周期</div><div class="param-panel">
+        ${[3,5,10].map(v=>`<div class="param-chip ${PARAMS.bias_ma===v?'active':''}" onclick="setP('bias_ma',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">BIAS 买入阈值 (%)</div><div class="param-panel">
+        ${[-5,-8,-10,-12,-15].map(v=>`<div class="param-chip ${PARAMS.bias_buy===v?'active':''}" onclick="setP('bias_buy',${v})">${v}%</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">BIAS 卖出阈值 (%)</div><div class="param-panel">
+        ${[8,10,12,15,20].map(v=>`<div class="param-chip ${PARAMS.bias_sell===v?'active':''}" onclick="setP('bias_sell',${v})">${v}%</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">KDJ 周期</div><div class="param-panel">
+        ${[5,9,14].map(v=>`<div class="param-chip ${PARAMS.kdj_period===v?'active':''}" onclick="setP('kdj_period',${v})">${v}</div>`).join('')}
+      </div></div>
+      <div class="param-section"><div class="param-label">放量倍数</div><div class="param-panel">
+        ${[1.5,2,2.5,3].map(v=>`<div class="param-chip ${PARAMS.vol_mult===v?'active':''}" onclick="setP('vol_mult',${v})">${v}x</div>`).join('')}
+      </div></div>
+    </div>
+  </div>
+
   <div class="row"><div class="c8">
-    <!-- CHART -->
     <div class="card"><div style="display:flex;gap:14px;font-size:11px;margin-bottom:6px;flex-wrap:wrap">
       <span style="color:var(--yl)">●MA5:${cr.ma5?.toFixed(0)||'—'}</span><span style="color:var(--ac)">●MA10:${cr.ma10?.toFixed(0)||'—'}</span>
       <span style="color:var(--pu)">●MA20:${cr.ma20?.toFixed(0)||'—'}</span><span style="color:var(--or)">●MA30:${cr.ma30?.toFixed(0)||'—'}</span></div>
       <div style="height:420px;position:relative"><canvas id="c1"></canvas></div></div>
-    <!-- MACD -->
     <div class="card"><div style="font-size:11px;color:var(--dm);margin-bottom:4px">MACD(12,26,9) <span style="color:var(--ac)">DIF:${cr.dif.toFixed(1)}</span> <span style="color:var(--or)">DEA:${cr.dea.toFixed(1)}</span> <span style="color:${cr.bar>0?'var(--gn)':'var(--rd)'}">柱:${cr.bar.toFixed(1)}</span></div>
       <div style="height:160px;position:relative"><canvas id="c2"></canvas></div></div>
   </div><div class="c4">
-    <!-- SIGNALS -->
     <div class="card" style="border-color:${tB.length?'var(--gn)':tS.length?'var(--rd)':'var(--bd)'}">
       <div class="card-t">🚨 今日信号</div>
       ${!tB.length&&!tS.length?'<div style="color:var(--dm);font-size:12px">无信号 — 继续等待</div>':''}
       ${tB.map(r=>`<div class="sig sb"><span style="color:var(--gn);font-weight:800">买</span><span style="flex:1;font-size:12px">${r.n}</span><span class="mono" style="font-weight:800;color:${cc(r.hr[3]?.wr||0)}">${((r.hr[3]?.wr||0)*100).toFixed(0)}%</span></div>`).join('')}
       ${tS.map(r=>`<div class="sig ss"><span style="color:var(--rd);font-weight:800">卖</span><span style="flex:1;font-size:12px">${r.n}</span></div>`).join('')}
     </div>
-    <!-- INDICATORS -->
     <div class="card"><div class="card-t">📊 指标</div><div class="igrid">
-      <div class="ibox"><div class="l">RSI14</div><div class="v" style="color:${cr.r>70?'var(--rd)':cr.r<30?'var(--gn)':'var(--yl)'}">${cr.r.toFixed(1)}</div><div class="n">${cr.r>75?'🔴强超买':cr.r>70?'⚠️超买':cr.r<30?'💚超卖':''}</div></div>
-      <div class="ibox"><div class="l">BIAS5</div><div class="v" style="font-size:17px;color:${cr.bi5>12?'var(--rd)':cr.bi5<-8?'var(--gn)':'var(--yl)'}">${cr.bi5?.toFixed(1)||'—'}%</div><div class="n">${cr.bi5>12?'🔴超涨':cr.bi5<-8?'💚超跌':''}</div></div>
+      <div class="ibox"><div class="l">RSI${PARAMS.rsi_period}</div><div class="v" style="color:${cr.r>70?'var(--rd)':cr.r<30?'var(--gn)':'var(--yl)'}">${cr.r.toFixed(1)}</div><div class="n">${cr.r>75?'🔴强超买':cr.r>70?'⚠️超买':cr.r<30?'💚超卖':''}</div></div>
+      <div class="ibox"><div class="l">BIAS${PARAMS.bias_ma}</div><div class="v" style="font-size:17px;color:${cr.bi5>12?'var(--rd)':cr.bi5<-8?'var(--gn)':'var(--yl)'}">${cr.bi5?.toFixed(1)||'—'}%</div><div class="n">${cr.bi5>12?'🔴超涨':cr.bi5<-8?'💚超跌':''}</div></div>
       <div class="ibox"><div class="l">量比</div><div class="v" style="font-size:17px;color:${cr.vr>2?'var(--rd)':'var(--dm)'}">${cr.vr.toFixed(1)}x</div></div>
       <div class="ibox"><div class="l">KDJ</div><div style="font-size:13px;font-weight:700;color:${cr.kK>cr.kD?'var(--gn)':'var(--rd)'}">K${cr.kK.toFixed(0)} D${cr.kD.toFixed(0)}</div></div>
       <div class="ibox"><div class="l">均线</div><div style="font-size:12px;font-weight:700;color:${cr.ma5>cr.ma10&&cr.ma10>cr.ma20?'var(--gn)':'var(--or)'}">${cr.ma5>cr.ma10&&cr.ma10>cr.ma20?'多头':'过渡'}</div></div>
       <div class="ibox"><div class="l">MACD</div><div style="font-size:12px;font-weight:700;color:${cr.dif>cr.dea?'var(--gn)':'var(--rd)'}">${cr.dif>cr.dea?'多头':'空头'}</div></div>
     </div></div>
-    <!-- BUY RADAR -->
     <div class="card" style="border-color:var(--ac)"><div class="card-t">🎯 买点雷达</div>
       <div style="font-size:12px;line-height:1.8">
         <div style="font-weight:700;color:${cr.r>65||cr.bi5>10?'var(--rd)':'var(--gn)'}">${cr.r>65||cr.bi5>10?'❌ 不宜追高':'🟡 关注中'}</div>
         <div style="margin-top:6px;color:var(--dm);font-size:11px">等待买入价位：</div>
-        <div>BIAS5=-8% → <b class="mono" style="color:var(--gn)">${bt}</b></div>
+        <div>BIAS${PARAMS.bias_ma}=${PARAMS.bias_buy}% → <b class="mono" style="color:var(--gn)">${bt}</b></div>
         <div>MA10 → <b class="mono" style="color:var(--gn)">${cr.ma10?.toFixed(0)||'—'}</b></div>
-        <div>BOLL(10)下轨 → <b class="mono" style="color:var(--gn)">${cr.b10l?.toFixed(0)||'—'}</b></div>
-        <div style="margin-top:8px;font-size:10px;color:var(--dm);padding:6px 8px;background:var(--c2);border-radius:6px">Wind: ↓${cr.ma10?.toFixed(0)||850} / ↓${bt} / ↑1000</div>
+        <div>BOLL(${PARAMS.boll_p})下轨 → <b class="mono" style="color:var(--gn)">${cr.b10l?.toFixed(0)||'—'}</b></div>
       </div>
     </div>
   </div></div>
@@ -165,20 +287,82 @@ function go(data,live){
   <div class="row"><div class="c6"><div class="card"><div class="card-t">📰 新闻催化</div>
     ${evts.slice(-10).reverse().map(e=>{const bar=data.find(d=>d.d===e.d);const col=e.p==='b'?'var(--gn)':e.p==='r'?'var(--rd)':e.p==='w'?'var(--or)':'var(--dm)';
       return`<div class="ev"><div style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></div><div class="mono" style="font-size:11px;color:var(--dm);min-width:46px">${e.d.slice(5)}</div><div style="font-size:12px;flex:1">${e.t}</div>${bar?`<div class="mono" style="font-size:12px;font-weight:700;min-width:44px;text-align:right">${bar.c.toFixed(0)}</div>`:''}</div>`;}).join('')}
-    <div style="font-size:10px;color:var(--or);margin-top:8px">⚠️ 7月基石解禁29.8亿 — 潜在抛压</div></div></div>
-  <div class="c6"><div class="card"><div class="card-t">🏆 策略排行 (3日胜率)</div><div style="overflow-x:auto"><table>
-    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>报酬</th><th>今</th></tr></thead>
-    <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0};
-      return`<tr><td style="color:var(--dm);font-weight:700">${i+1}</td><td style="font-weight:600">${r.n}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
+  </div>
+
+  <!-- ====== LOCK-UP CARD ====== -->
+  <div class="card lockup-card">
+    <div class="card-t">🔒 基石解禁详情</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+      <div><span style="color:var(--dm)">解禁日</span><br><b class="mono" style="color:var(--rd);font-size:16px">${LOCKUP.date}</b></div>
+      <div><span style="color:var(--dm)">倒计时</span><br><b class="mono" style="color:${daysToLock<=30?'var(--rd)':'var(--or)'}; font-size:16px">${daysToLock>0?daysToLock+'天':'已解禁'}</b></div>
+      <div><span style="color:var(--dm)">总金额</span><br><b class="mono" style="font-size:16px">${LOCKUP.amount}</b></div>
+      <div><span style="color:var(--dm)">股数</span><br><b class="mono" style="font-size:14px">${LOCKUP.shares}</b></div>
+      <div><span style="color:var(--dm)">发行价</span><br><b class="mono" style="font-size:14px">$${LOCKUP.ipoPrice}</b></div>
+      <div><span style="color:var(--dm)">占发售</span><br><b class="mono" style="font-size:14px">${LOCKUP.pctOfOffer}%</b></div>
+      <div><span style="color:var(--dm)">浮盈</span><br><b class="mono" style="color:var(--gn);font-size:14px">+${lockPnl}%</b></div>
+    </div>
+    <div style="font-size:10px;color:var(--dm);margin-top:10px">11家基石投资者：</div>
+    <div class="lockup-investors">${LOCKUP.investors.map(i=>`<span class="lockup-inv">${i.n}</span>`).join('')}</div>
+    <div style="font-size:10px;color:var(--or);margin-top:8px;padding:6px 8px;background:#f8717108;border-radius:6px">⚠️ 解禁后基石持股可自由流通，按当前价计浮盈${lockPnl}%，抛压风险${daysToLock<=60?'较高':'需关注'}</div>
+  </div>
+  </div>
+
+  <div class="c6">
+  <!-- ====== STRATEGY RANKING WITH EXPANDABLE DETAILS ====== -->
+  <div class="card"><div class="card-t">🏆 策略排行 (3日胜率) <span style="font-size:10px;color:var(--dm);font-weight:400">点击展开明细</span></div><div style="overflow-x:auto"><table>
+    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>今</th></tr></thead>
+    <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0},h5=r.hr[5]||{wr:0,ar:0};
+      const detailId='sd'+i;
+      // Build trade list for detail
+      const buys=r.tr.filter(t=>t.t==='B');
+      const tradeRows=buys.slice(-15).reverse().map(b=>{
+        const ei1=Math.min(b.i+1,data.length-1),ei3=Math.min(b.i+3,data.length-1),ei5=Math.min(b.i+5,data.length-1);
+        const r1=ei1>b.i?((data[ei1].c-b.p)/b.p*100).toFixed(1):'—';
+        const r3=ei3>b.i?((data[ei3].c-b.p)/b.p*100).toFixed(1):'—';
+        const r5=ei5>b.i?((data[ei5].c-b.p)/b.p*100).toFixed(1):'—';
+        return`<div class="trade-item">
+          <span class="mono" style="color:var(--dm);min-width:44px">${b.d.slice(5)}</span>
+          <span class="mono" style="min-width:44px">${b.p.toFixed(0)}</span>
+          <span class="mono" style="min-width:40px;color:${parseFloat(r1)>=0?'var(--gn)':'var(--rd)'}">${r1}%</span>
+          <span class="mono" style="min-width:40px;color:${parseFloat(r3)>=0?'var(--gn)':'var(--rd)'}">${r3}%</span>
+          <span class="mono" style="min-width:40px;color:${parseFloat(r5)>=0?'var(--gn)':'var(--rd)'}">${r5}%</span>
+        </div>`;
+      }).join('');
+
+      return`<tr class="str-row" onclick="toggleDetail('${detailId}',this)"><td style="color:var(--dm);font-weight:700">${i+1}</td><td style="font-weight:600">${r.n}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
       <td class="mono" style="color:${cc(h1.wr)};font-weight:700">${(h1.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${cc(h3.wr)};font-weight:700">${(h3.wr*100).toFixed(0)}%</td>
+      <td class="mono" style="color:${cc(h5.wr)};font-weight:700">${(h5.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${h3.ar>=0?'var(--gn)':'var(--rd)'}">${h3.ar>=0?'+':''}${(h3.ar*100).toFixed(1)}%</td>
-      <td>${r.bT?'<b style="color:var(--gn)">买</b>':r.sT?'<b style="color:var(--rd)">卖</b>':'—'}</td></tr>`;}).join('')}</tbody></table></div></div></div></div>
+      <td>${r.bT?'<b style="color:var(--gn)">买</b>':r.sT?'<b style="color:var(--rd)">卖</b>':'—'}</td></tr>
+      <tr class="str-detail" id="${detailId}"><td colspan="9">
+        <div class="dt-grid">
+          <div class="dt-box"><div class="dt-l">1日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h1.wr)}">${(h1.wr*100).toFixed(0)}%</b> / <span class="mono">${((h1.ar||0)*100).toFixed(1)}%</span></div>
+          <div class="dt-box"><div class="dt-l">3日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h3.wr)}">${(h3.wr*100).toFixed(0)}%</b> / <span class="mono">${(h3.ar*100).toFixed(1)}%</span></div>
+          <div class="dt-box"><div class="dt-l">5日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h5.wr)}">${(h5.wr*100).toFixed(0)}%</b> / <span class="mono">${(h5.ar*100).toFixed(1)}%</span></div>
+          <div class="dt-box"><div class="dt-l">买入次数 / 卖出次数</div><span class="mono">${r.tr.filter(t=>t.t==='B').length} / ${r.tr.filter(t=>t.t==='S').length}</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:10px;color:var(--dm)">最近15笔买入信号明细 <span style="color:var(--ac)">日期 · 买价 · 1日 · 3日 · 5日</span></div>
+        <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
+      </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
   <div style="font-size:9px;color:var(--dm);text-align:center;padding:12px 0;border-top:1px solid var(--bd)">
-    ⚠️ ${live?'Yahoo Finance实时':'离线近似'}数据 · 样本极小 · 不构成投资建议 · 16:00后刷新更新</div>`;
+    ⚠️ ${live?'Yahoo Finance实时':'离线近似'}数据 · 样本极小 · 不构成投资建议 · 每5分钟自动刷新</div>`;
 
   setTimeout(()=>dc(data,I),80);
+  startAutoRefresh();
+}
+
+function toggleDetail(id,row){
+  const det=document.getElementById(id);
+  if(!det)return;
+  det.classList.toggle('open');
+  row.classList.toggle('open');
+}
+
+function setP(key,val){
+  PARAMS[key]=val;
+  go(D,!!document.querySelector('.badge')?.textContent?.includes('实时'));
 }
 
 function dc(data,I){
@@ -212,7 +396,10 @@ function dc(data,I){
 
 function ap(){const c=parseFloat(document.getElementById('ic').value);if(!c)return alert('输入收盘价');const L=D[D.length-1];
   D.push({d:new Date().toISOString().slice(0,10),o:L.c,h:Math.max(parseFloat(document.getElementById('ih').value)||c,c,L.c),l:Math.min(parseFloat(document.getElementById('il').value)||c,c,L.c),c,v:parseFloat(document.getElementById('iv').value)||L.v});go(D,false);}
-async function rl(){document.getElementById('app').innerHTML='<div class="loading"><div class="sp"></div><div style="margin-top:12px">获取数据...</div></div>';const d=await fd();if(d){localStorage.setItem('zd',JSON.stringify(d));go(d,true);}else go(D.length?D:FB,false);}
+async function rl(silent){
+  if(!silent)document.getElementById('app').innerHTML='<div class="loading"><div class="sp"></div><div style="margin-top:12px">获取数据...</div></div>';
+  const d=await fd();if(d){localStorage.setItem('zd',JSON.stringify(d));go(d,true);}else go(D.length?D:FB,false);
+}
 
 (async()=>{const d=await fd();if(d?.length>5){localStorage.setItem('zd',JSON.stringify(d));go(d,true);}
   else{try{const c=JSON.parse(localStorage.getItem('zd'));if(c?.length>5){go(c,false);return;}}catch(e){}go(FB,false);}})();
