@@ -86,33 +86,159 @@ const NW=[
   {d:'2026-02-23',t:'AI板块暴跌',p:'r'},{d:'2026-03-07',t:'美伊战争冲击',p:'r'},
   {d:'2026-03-31',t:'年报前大涨',p:'b'},{d:'2026-04-01',t:'年报+131%+API涨83%',p:'b'},
   {d:'2026-04-08',t:'GLM5.1+涨价+停火',p:'b'},{d:'2026-04-09',t:'冲999未破千',p:'r'},
-  {d:'2026-07-08',t:'⚠️基石解禁',p:'w'},
+  {d:'2026-07-08',t:'⚠️基石+SII解禁',p:'w'},
+  {d:'2027-01-08',t:'⚠️创始人+VC全解禁',p:'w'},
 ];
 
-// Cornerstone lock-up details
+// Lock-up details (from prospectus)
 const LOCKUP={
-  date:'2026-07-08',
-  amount:'29.8亿港元',
-  shares:'2,568.16万股',
-  ipoPrice:116.2,
-  investors:[
-    {n:'JSC International (璟泉启智)',a:''},
-    {n:'JinYi Capital (金逸)',a:''},
-    {n:'Perseverance (高毅资产)',a:''},
-    {n:'CICC Financial Trading',a:''},
-    {n:'WT Asset Management',a:''},
-    {n:'泰康人寿',a:''},
-    {n:'广发基金',a:''},
-    {n:'3W Fund',a:''},
-    {n:'雾凇资本',a:''},
-    {n:'中庸资本',a:''},
-    {n:'凌云光技术',a:''},
+  batches:[
+    {
+      date:'2026-07-08', label:'第一批 (6个月)',
+      groups:[
+        {n:'Legend Capital 联想之星', shares:27109120, pct:6.16, type:'SII'},
+        {n:'Meituan 美团', shares:17217310, pct:3.91, type:'SII'},
+      ],
+      // Plus cornerstone H-share investors (6-month lock)
+      cornerstone:{
+        amount:'29.8亿港元', shares:25681600, pct_offer:68.63,
+        investors:['JSC International (璟泉启智)','JinYi Capital (金逸)','Perseverance (高毅资产)','CICC Financial Trading','WT Asset Management','泰康人寿','广发基金','3W Fund','雾凇资本','中庸资本','凌云光技术'],
+      },
+    },
+    {
+      date:'2027-01-08', label:'第二批 (12个月)',
+      note:'所有Pre-IPO股东（含红杉、高瓴、启明等VC）均12个月锁定',
+      groups:[
+        {n:'Dr. Liu 刘德兵 + 关联平台', shares:101642580, pct:23.09, type:'创始人'},
+        {n:'Dr. Tang 唐杰', shares:26835330, pct:6.10, type:'创始人'},
+        {n:'Dr. Li 等其他创始人', shares:4566320, pct:1.03, type:'创始人'},
+      ],
+    },
   ],
-  pctOfOffer:68.63,
+  ipoPrice:116.2,
+  totalShares:440200000, // approx total shares
 };
 
-const PX=[u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`];
-async function fd(){const url=`https://query1.finance.yahoo.com/v8/finance/chart/2513.HK?range=1y&interval=1d`;for(const px of PX){try{const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),8000);const r=await fetch(px(url),{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));if(!r.ok)continue;const j=await r.json(),res=j.chart?.result?.[0];if(!res)continue;const ts=res.timestamp,q=res.indicators.quote[0],d=[];for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;d.push({d:new Date(ts[i]*1000).toISOString().slice(0,10),o:+(q.open[i]||q.close[i]).toFixed(2),h:+(q.high[i]||q.close[i]).toFixed(2),l:+(q.low[i]||q.close[i]).toFixed(2),c:+q.close[i].toFixed(2),v:q.volume[i]||0});}if(d.length>5)return d;}catch(e){console.warn(e);}}return null;}
+// ====== Multi-source data fetching ======
+const PX=[
+  u=>u, // direct first (Chinese APIs often allow cross-origin or JSONP)
+  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u=>`https://thingproxy.freeboard.io/fetch/${u}`,
+];
+let fetchLog=[];
+
+// --- Tencent Finance (腾讯) ---
+async function fdTencent(){
+  const url='https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk02513,day,,,365,qfq';
+  for(const px of PX){
+    try{
+      const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),6000);
+      const purl=px(url);
+      fetchLog.push({src:'腾讯',url:purl.slice(0,60),status:'...'});
+      const r=await fetch(purl,{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));
+      if(!r.ok){fetchLog[fetchLog.length-1].status=`${r.status}`;continue;}
+      const j=await r.json();
+      const raw=j?.data?.hk02513?.qfqday || j?.data?.hk02513?.day;
+      if(!raw?.length){fetchLog[fetchLog.length-1].status='no data';continue;}
+      const d=raw.map(r=>({d:r[0],o:+r[1],c:+r[2],h:+r[3],l:+r[4],v:+r[5]})).filter(x=>x.c>0);
+      if(d.length>5){lastFetchTime=new Date();lastFetchSrc='腾讯';fetchLog[fetchLog.length-1].status='✅ '+d.length+'条';return d;}
+      fetchLog[fetchLog.length-1].status='<5 rows';
+    }catch(e){fetchLog[fetchLog.length-1].status=e.name==='AbortError'?'timeout':e.message?.slice(0,20)||'error';}
+  }
+  return null;
+}
+
+// --- Sina Finance (新浪) ---
+async function fdSina(){
+  // Sina kline API
+  const url='https://finance.pae.baidu.com/vapi/v1/getquotation?all=1&srcid=5353&pointType=string&group=quotation_kline_ab&query=02513.HK&code=02513.HK&market_type=hk&ktype=day&count=365&finClientType=pc';
+  for(const px of PX){
+    try{
+      const purl=px(url);
+      fetchLog.push({src:'百度',url:purl.slice(0,60),status:'...'});
+      const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),6000);
+      const r=await fetch(purl,{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));
+      if(!r.ok){fetchLog[fetchLog.length-1].status=`${r.status}`;continue;}
+      const j=await r.json();
+      const raw=j?.Result?.newMarketData?.keys;
+      if(raw){
+        // Parse Baidu format
+        const ma=j.Result.newMarketData.marketData?.split(';')||[];
+        if(ma.length>5){
+          const d=ma.filter(s=>s).map(s=>{const p=s.split(',');return{d:p[1],o:+p[2],c:+p[3],h:+p[4],l:+p[5],v:+p[6]};}).filter(x=>x.c>0&&x.d);
+          if(d.length>5){lastFetchTime=new Date();lastFetchSrc='百度';fetchLog[fetchLog.length-1].status='✅ '+d.length+'条';return d;}
+        }
+      }
+      fetchLog[fetchLog.length-1].status='parse fail';
+    }catch(e){fetchLog[fetchLog.length-1].status=e.name==='AbortError'?'timeout':e.message?.slice(0,20)||'error';}
+  }
+  return null;
+}
+
+// --- EastMoney (东方财富) ---
+async function fdEast(){
+  const url='https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=116.02513&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1&end=20270101&lmt=365';
+  for(const px of PX){
+    try{
+      const purl=px(url);
+      fetchLog.push({src:'东财',url:purl.slice(0,60),status:'...'});
+      const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),6000);
+      const r=await fetch(purl,{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));
+      if(!r.ok){fetchLog[fetchLog.length-1].status=`${r.status}`;continue;}
+      const j=await r.json();
+      const klines=j?.data?.klines;
+      if(!klines?.length){fetchLog[fetchLog.length-1].status='no data';continue;}
+      const d=klines.map(s=>{const p=s.split(',');return{d:p[0],o:+p[1],c:+p[2],h:+p[3],l:+p[4],v:+p[5]};}).filter(x=>x.c>0);
+      if(d.length>5){lastFetchTime=new Date();lastFetchSrc='东方财富';fetchLog[fetchLog.length-1].status='✅ '+d.length+'条';return d;}
+      fetchLog[fetchLog.length-1].status='<5 rows';
+    }catch(e){fetchLog[fetchLog.length-1].status=e.name==='AbortError'?'timeout':e.message?.slice(0,20)||'error';}
+  }
+  return null;
+}
+
+// --- Yahoo Finance (fallback) ---
+async function fdYahoo(){
+  const urls=[
+    'https://query1.finance.yahoo.com/v8/finance/chart/2513.HK?range=1y&interval=1d',
+    'https://query2.finance.yahoo.com/v8/finance/chart/2513.HK?range=1y&interval=1d',
+  ];
+  for(const yurl of urls){
+    for(const px of PX){
+      try{
+        const purl=px(yurl);
+        fetchLog.push({src:'Yahoo',url:purl.slice(0,60),status:'...'});
+        const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),6000);
+        const r=await fetch(purl,{signal:ctrl.signal,headers:{'X-Requested-With':'XMLHttpRequest'}}).finally(()=>clearTimeout(tmr));
+        if(!r.ok){fetchLog[fetchLog.length-1].status=`${r.status}`;continue;}
+        const j=await r.json(),res=j.chart?.result?.[0];
+        if(!res){fetchLog[fetchLog.length-1].status='no data';continue;}
+        const ts=res.timestamp,q=res.indicators.quote[0],d=[];
+        for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;
+          d.push({d:new Date(ts[i]*1000).toISOString().slice(0,10),o:+(q.open[i]||q.close[i]).toFixed(2),h:+(q.high[i]||q.close[i]).toFixed(2),l:+(q.low[i]||q.close[i]).toFixed(2),c:+q.close[i].toFixed(2),v:q.volume[i]||0});}
+        if(d.length>5){lastFetchTime=new Date();lastFetchSrc='Yahoo';fetchLog[fetchLog.length-1].status='✅ '+d.length+'条';return d;}
+        fetchLog[fetchLog.length-1].status='<5 rows';
+      }catch(e){fetchLog[fetchLog.length-1].status=e.name==='AbortError'?'timeout':e.message?.slice(0,20)||'error';}
+    }
+  }
+  return null;
+}
+
+// Master fetch: try sources in order
+async function fd(){
+  fetchLog=[];
+  // Try Chinese sources first (more reliable for HK stocks in Asia)
+  let d=await fdTencent();
+  if(d)return d;
+  d=await fdEast();
+  if(d)return d;
+  d=await fdYahoo();
+  if(d)return d;
+  d=await fdSina();
+  if(d)return d;
+  return null;
+}
 const FB=[{d:"2026-01-08",o:120,h:135,l:116.2,c:131.5,v:8200000},{d:"2026-01-09",o:133,h:158.6,l:130,c:158.6,v:9500000},{d:"2026-01-10",o:160,h:175,l:155,c:168,v:7800000},{d:"2026-01-12",o:170,h:230.6,l:165,c:207,v:12e6},{d:"2026-01-13",o:210,h:215,l:185,c:192,v:89e5},{d:"2026-01-14",o:190,h:198,l:178,c:185,v:65e5},{d:"2026-01-15",o:186,h:195,l:180,c:190,v:58e5},{d:"2026-01-16",o:192,h:200,l:188,c:195,v:52e5},{d:"2026-01-17",o:196,h:205,l:190,c:202,v:61e5},{d:"2026-01-20",o:200,h:210,l:195,c:208,v:55e5},{d:"2026-01-21",o:210,h:220,l:205,c:215,v:68e5},{d:"2026-01-22",o:215,h:225,l:210,c:218,v:59e5},{d:"2026-01-23",o:220,h:235,l:218,c:230,v:72e5},{d:"2026-02-05",o:245,h:260,l:240,c:255,v:65e5},{d:"2026-02-06",o:258,h:275,l:250,c:270,v:71e5},{d:"2026-02-07",o:272,h:285,l:265,c:280,v:68e5},{d:"2026-02-10",o:282,h:300,l:278,c:295,v:75e5},{d:"2026-02-11",o:298,h:315,l:290,c:312,v:82e5},{d:"2026-02-12",o:315,h:440,l:310,c:402,v:15e6},{d:"2026-02-13",o:405,h:425,l:380,c:390,v:11e6},{d:"2026-02-14",o:388,h:410,l:375,c:395,v:85e5},{d:"2026-02-17",o:398,h:420,l:390,c:410,v:78e5},{d:"2026-02-18",o:412,h:430,l:400,c:415,v:72e5},{d:"2026-02-19",o:418,h:425,l:395,c:400,v:69e5},{d:"2026-02-20",o:398,h:405,l:380,c:385,v:75e5},{d:"2026-02-21",o:388,h:395,l:370,c:375,v:8e6},{d:"2026-02-23",o:378,h:380,l:295,c:310,v:18e6},{d:"2026-02-24",o:315,h:340,l:305,c:330,v:12e6},{d:"2026-02-25",o:335,h:355,l:325,c:350,v:95e5},{d:"2026-02-26",o:348,h:365,l:340,c:358,v:82e5},{d:"2026-02-27",o:355,h:370,l:348,c:362,v:78e5},{d:"2026-02-28",o:360,h:375,l:355,c:370,v:72e5},{d:"2026-03-03",o:368,h:380,l:360,c:372,v:65e5},{d:"2026-03-04",o:375,h:390,l:370,c:385,v:68e5},{d:"2026-03-05",o:388,h:395,l:365,c:370,v:75e5},{d:"2026-03-06",o:368,h:375,l:345,c:350,v:82e5},{d:"2026-03-07",o:352,h:360,l:330,c:338,v:9e6},{d:"2026-03-10",o:340,h:355,l:325,c:348,v:78e5},{d:"2026-03-11",o:350,h:365,l:345,c:360,v:65e5},{d:"2026-03-12",o:362,h:380,l:355,c:375,v:72e5},{d:"2026-03-13",o:378,h:395,l:370,c:390,v:78e5},{d:"2026-03-14",o:392,h:410,l:385,c:405,v:85e5},{d:"2026-03-17",o:408,h:420,l:395,c:412,v:72e5},{d:"2026-03-18",o:415,h:435,l:410,c:430,v:88e5},{d:"2026-03-19",o:432,h:460,l:425,c:455,v:95e5},{d:"2026-03-20",o:458,h:490,l:450,c:485,v:102e5},{d:"2026-03-21",o:488,h:520,l:480,c:510,v:11e6},{d:"2026-03-24",o:515,h:540,l:505,c:535,v:98e5},{d:"2026-03-25",o:538,h:560,l:530,c:555,v:92e5},{d:"2026-03-26",o:558,h:590,l:550,c:580,v:105e5},{d:"2026-03-27",o:582,h:620,l:575,c:610,v:115e5},{d:"2026-03-28",o:615,h:650,l:608,c:640,v:12e6},{d:"2026-03-31",o:645,h:695,l:638,c:693,v:135e5},{d:"2026-04-01",o:700,h:920,l:690,c:915,v:567e5},{d:"2026-04-02",o:918,h:935,l:850,c:868,v:28e6},{d:"2026-04-03",o:865,h:880,l:810,c:825,v:18e6},{d:"2026-04-04",o:828,h:845,l:780,c:779,v:155e5},{d:"2026-04-07",o:775,h:800,l:760,c:790,v:12e6},{d:"2026-04-08",o:795,h:910,l:790,c:868.5,v:22e6},{d:"2026-04-09",o:900,h:999,l:895,c:935,v:247e5}];
 
 // ====== Configurable strategy parameters ======
@@ -158,7 +284,7 @@ function stBt(d,I){
   });
 }
 
-let D=[],ch1=null,ch2=null,refreshTimer=null,refreshCountdown=300;
+let D=[],ch1=null,ch2=null,refreshTimer=null,refreshCountdown=300,lastFetchTime=null,lastFetchSrc='';
 const cc=v=>v>=.6?'var(--gn)':v>=.4?'var(--yl)':'var(--rd)';
 
 // ====== Auto-refresh: 5 min ======
@@ -185,10 +311,32 @@ function go(data,live){
   const bt=cr.ma5?(cr.ma5*.92).toFixed(0):'—';
   const evts=NW.filter(e=>data.some(d=>d.d===e.d));
 
-  // Lock-up countdown
-  const today=new Date(),lockDate=new Date(LOCKUP.date);
-  const daysToLock=Math.ceil((lockDate-today)/(1000*60*60*24));
+  // Lock-up countdowns
+  const today=new Date();
   const lockPnl=((L.c-LOCKUP.ipoPrice)/LOCKUP.ipoPrice*100).toFixed(0);
+  const lockupHTML=LOCKUP.batches.map((b,bi)=>{
+    const ld=new Date(b.date), days=Math.ceil((ld-today)/(1000*60*60*24));
+    const totalShares=b.groups.reduce((s,g)=>s+g.shares,0)+(b.cornerstone?b.cornerstone.shares:0);
+    const totalPct=b.groups.reduce((s,g)=>s+g.pct,0);
+    const mktVal=(totalShares*L.c/1e8).toFixed(1);
+    return `
+    <div style="margin-bottom:14px;padding:12px;background:var(--c2);border-radius:8px;border-left:3px solid ${bi===0?'var(--or)':'var(--rd)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div><b style="color:${bi===0?'var(--or)':'var(--rd)'}; font-size:13px">${b.label}</b>
+          <span class="mono" style="font-size:12px;margin-left:8px">${b.date}</span></div>
+        <b class="mono" style="color:${days<=30?'var(--rd)':days<=90?'var(--or)':'var(--dm)'}; font-size:14px">${days>0?'⏱ '+days+'天':'✅ 已解禁'}</b>
+      </div>
+      <table style="margin-top:8px;font-size:11px"><thead><tr><th>股东</th><th>股数</th><th>占比</th><th style="text-align:right">按现价市值</th></tr></thead>
+      <tbody>${b.groups.map(g=>`<tr><td>${g.n}</td><td class="mono">${(g.shares/1e4).toFixed(0)}万</td><td class="mono">${g.pct}%</td><td class="mono" style="text-align:right">${(g.shares*L.c/1e8).toFixed(1)}亿</td></tr>`).join('')}
+      ${b.cornerstone?`<tr style="border-top:1px solid var(--bd)"><td colspan="4" style="padding-top:8px"><b style="font-size:11px">+ 基石投资者 (H股国配)</b> — ${b.cornerstone.amount} · ${(b.cornerstone.shares/1e4).toFixed(0)}万股 · 占发售${b.cornerstone.pct_offer}%<br>
+        <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">${b.cornerstone.investors.map(n=>`<span style="background:var(--bg);border-radius:3px;padding:1px 6px;font-size:9px;color:var(--dm)">${n}</span>`).join('')}</div>
+        <div class="mono" style="margin-top:4px;font-size:11px">按现价市值: <b style="color:var(--or)">${(b.cornerstone.shares*L.c/1e8).toFixed(1)}亿</b></div>
+      </td></tr>`:''}
+      </tbody></table>
+      ${b.note?`<div style="font-size:10px;color:var(--pu);margin-top:6px;padding:4px 8px;background:#a78bfa08;border-radius:4px">📋 ${b.note}</div>`:''}
+      <div style="font-size:10px;color:var(--dm);margin-top:4px">SII小计: ~${totalPct.toFixed(1)}% · 按现价 ~${mktVal}亿港元</div>
+    </div>`;
+  }).join('');
 
   document.getElementById('app').innerHTML=`
   <div class="hdr"><div>
@@ -199,6 +347,7 @@ function go(data,live){
       <span class="price">${L.c.toFixed(1)}</span>
       <span class="chg" style="color:${chg>=0?'var(--gn)':'var(--rd)'}">${chg>=0?'+':''}${chg.toFixed(1)} (${chg>=0?'+':''}${cp.toFixed(1)}%)</span></div>
     <div style="font-size:11px;color:var(--dm);margin-top:2px">${L.d} · 高${L.h} 低${L.l} 量${(L.v/1e4).toFixed(0)}万 · ${data.length}日</div>
+    <div style="font-size:10px;color:var(--dm);margin-top:2px">${lastFetchTime?'📡 数据获取于 '+lastFetchTime.toLocaleString('zh-CN',{hour12:false})+' ('+lastFetchSrc+')':'⚠️ 离线数据'}</div>
     <div class="refresh-bar"><div class="refresh-fill" style="width:0%"></div></div>
   </div>
   <div style="display:flex;gap:6px;align-items:center">
@@ -289,21 +438,11 @@ function go(data,live){
       return`<div class="ev"><div style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></div><div class="mono" style="font-size:11px;color:var(--dm);min-width:46px">${e.d.slice(5)}</div><div style="font-size:12px;flex:1">${e.t}</div>${bar?`<div class="mono" style="font-size:12px;font-weight:700;min-width:44px;text-align:right">${bar.c.toFixed(0)}</div>`:''}</div>`;}).join('')}
   </div>
 
-  <!-- ====== LOCK-UP CARD ====== -->
+  <!-- ====== LOCK-UP CARD (TWO BATCHES) ====== -->
   <div class="card lockup-card">
-    <div class="card-t">🔒 基石解禁详情</div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
-      <div><span style="color:var(--dm)">解禁日</span><br><b class="mono" style="color:var(--rd);font-size:16px">${LOCKUP.date}</b></div>
-      <div><span style="color:var(--dm)">倒计时</span><br><b class="mono" style="color:${daysToLock<=30?'var(--rd)':'var(--or)'}; font-size:16px">${daysToLock>0?daysToLock+'天':'已解禁'}</b></div>
-      <div><span style="color:var(--dm)">总金额</span><br><b class="mono" style="font-size:16px">${LOCKUP.amount}</b></div>
-      <div><span style="color:var(--dm)">股数</span><br><b class="mono" style="font-size:14px">${LOCKUP.shares}</b></div>
-      <div><span style="color:var(--dm)">发行价</span><br><b class="mono" style="font-size:14px">$${LOCKUP.ipoPrice}</b></div>
-      <div><span style="color:var(--dm)">占发售</span><br><b class="mono" style="font-size:14px">${LOCKUP.pctOfOffer}%</b></div>
-      <div><span style="color:var(--dm)">浮盈</span><br><b class="mono" style="color:var(--gn);font-size:14px">+${lockPnl}%</b></div>
-    </div>
-    <div style="font-size:10px;color:var(--dm);margin-top:10px">11家基石投资者：</div>
-    <div class="lockup-investors">${LOCKUP.investors.map(i=>`<span class="lockup-inv">${i.n}</span>`).join('')}</div>
-    <div style="font-size:10px;color:var(--or);margin-top:8px;padding:6px 8px;background:#f8717108;border-radius:6px">⚠️ 解禁后基石持股可自由流通，按当前价计浮盈${lockPnl}%，抛压风险${daysToLock<=60?'较高':'需关注'}</div>
+    <div class="card-t">🔒 解禁时间表 <span style="font-size:11px;color:var(--dm);font-weight:400">· 发行价$${LOCKUP.ipoPrice} · 基石浮盈<b style="color:var(--gn)">+${lockPnl}%</b></span></div>
+    ${lockupHTML}
+    <div style="font-size:10px;color:var(--or);padding:6px 8px;background:#f8717108;border-radius:6px">⚠️ 7月第一批: SII(联想之星+美团~10%) + 基石H股同时解禁，抛压较集中。2027年1月第二批更大: 创始人+全部Pre-IPO VC(红杉/高瓴/启明等)~30%+解锁</div>
   </div>
   </div>
 
@@ -347,7 +486,12 @@ function go(data,live){
       </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
   <div style="font-size:9px;color:var(--dm);text-align:center;padding:12px 0;border-top:1px solid var(--bd)">
-    ⚠️ ${live?'Yahoo Finance实时':'离线近似'}数据 · 样本极小 · 不构成投资建议 · 每5分钟自动刷新</div>`;
+    ⚠️ ${live?'Yahoo Finance实时':'离线近似'}数据 · 样本极小 · 不构成投资建议 · 每5分钟自动刷新
+    ${!live?`<div style="margin-top:6px;text-align:left;background:var(--c2);padding:8px;border-radius:6px;color:var(--rd)">
+      <b>⚠️ 数据获取失败，显示离线数据。</b> 代理尝试记录：<br>
+      ${fetchLog.map(l=>`<span style="color:${l.status.startsWith('✅')?'var(--gn)':'var(--rd)'}">· [${l.src}] ${l.url}... → ${l.status}</span><br>`).join('')}
+      <div style="margin-top:4px;color:var(--yl)">💡 可尝试：1) 刷新页面重试 2) 换浏览器/网络 3) 手动输入今日收盘价</div>
+    </div>`:''}</div>`;
 
   setTimeout(()=>dc(data,I),80);
   startAutoRefresh();
