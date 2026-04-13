@@ -249,6 +249,8 @@ let PARAMS={
   rsi_combo_buy:40, rsi_combo_sell:60,
   kdj_period:9, kdj_low:40, kdj_high:60,
   vol_mult:2, vol_lookback:10,
+  // Entry mode: 'next_open' = T+1开盘(保守), 'same_close' = 当日尾盘(盯盘), 'trigger' = 触发价(限价单)
+  entry_mode:'same_close',
 };
 
 // Indicators
@@ -262,25 +264,124 @@ function _bl(d,p,m){const s=_s(d,p);return d.map((_,i)=>{if(i<p-1)return{u:null,
 function calc(d){return{r14:_r(d,PARAMS.rsi_period),mc:_m(d),m5:_s(d,5),m10:_s(d,10),m20:_s(d,20),m30:_s(d,30),bi5:_bi(d,PARAMS.bias_ma),bi10:_bi(d,10),kd:_k(d,PARAMS.kdj_period),b10:_bl(d,PARAMS.boll_p,PARAMS.boll_m),b20:_bl(d,20,2)};}
 
 function stBt(d,I){
-  const{r14,mc,b10,m5,m10,m20,bi5,bi10,kd}=I;
+  const{r14,mc,b10,b20,m5,m10,m20,bi5,bi10,kd}=I;
   const P=PARAMS;
+  // Helper: candle metrics
+  const body=i=>Math.abs(d[i].c-d[i].o);
+  const range=i=>d[i].h-d[i].l||0.01;
+  const isGreen=i=>d[i].c>d[i].o;
+  const lowerShadow=i=>Math.min(d[i].o,d[i].c)-d[i].l;
+  const upperShadow=i=>d[i].h-Math.max(d[i].o,d[i].c);
+  const avgVol=(i,n)=>i>=n?d.slice(i-n,i).reduce((s,x)=>s+x.v,0)/n:d[i].v;
+  const pctChg=i=>i>0?(d[i].c-d[i-1].c)/d[i-1].c:0;
+
   const S=[
-    {n:`RSI(${P.rsi_period}) ${P.rsi_buy}/${P.rsi_sell}`,c:'RSI',b:i=>i>0&&r14[i]>P.rsi_buy&&r14[i-1]<=P.rsi_buy,s:i=>i>0&&r14[i]<P.rsi_sell&&r14[i-1]>=P.rsi_sell},
-    {n:'MACD金叉/死叉',c:'MACD',b:i=>i>0&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
-    {n:'MACD柱反转',c:'MACD',b:i=>i>2&&mc.bar[i]>mc.bar[i-1]&&mc.bar[i-1]<mc.bar[i-2]&&mc.bar[i]<0,s:i=>i>2&&mc.bar[i]<mc.bar[i-1]&&mc.bar[i-1]>mc.bar[i-2]&&mc.bar[i]>0},
-    {n:`BOLL(${P.boll_p},${P.boll_m})反弹`,c:'BOLL',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&d[i].c>d[i].o,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&d[i].c<d[i].o},
-    {n:'MA5/10交叉',c:'均线',b:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]>m10[i]&&m5[i-1]<=m10[i-1],s:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]<m10[i]&&m5[i-1]>=m10[i-1]},
-    {n:'MA10/20交叉',c:'均线',b:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]>m20[i]&&m10[i-1]<=m20[i-1],s:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]<m20[i]&&m10[i-1]>=m20[i-1]},
-    {n:`BIAS${P.bias_ma} <${P.bias_buy}%反弹`,c:'乖离率',b:i=>i>0&&bi5[i]!==null&&bi5[i]>P.bias_buy&&bi5[i-1]<=P.bias_buy,s:i=>i>0&&bi5[i]!==null&&bi5[i]<P.bias_sell&&bi5[i-1]>=P.bias_sell},
-    {n:'放量阳线',c:'量价',b:i=>{if(i<P.vol_lookback)return false;const a=d.slice(i-P.vol_lookback,i).reduce((s,x)=>s+x.v,0)/P.vol_lookback;return d[i].v>a*P.vol_mult&&d[i].c>d[i].o;},s:i=>{if(i<P.vol_lookback)return false;const a=d.slice(i-P.vol_lookback,i).reduce((s,x)=>s+x.v,0)/P.vol_lookback;return d[i].v>a*P.vol_mult&&d[i].c<d[i].o;}},
-    {n:`KDJ低位金叉(<${P.kdj_low})`,c:'KDJ',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low,s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>P.kdj_high},
-    {n:`RSI<${P.rsi_combo_buy}+MACD金叉`,c:'组合',b:i=>i>0&&r14[i]<P.rsi_combo_buy&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&r14[i]>P.rsi_combo_sell&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
-    {n:`BOLL+RSI<${P.rsi_combo_buy}`,c:'组合',b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&r14[i]<P.rsi_combo_buy,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&r14[i]>65},
-    {n:`BIAS<${P.bias_buy}+MACD翻正`,c:'组合',b:i=>i>1&&bi5[i]!==null&&bi5[i]<P.bias_buy&&mc.bar[i]>0&&mc.bar[i-1]<=0,s:i=>i>1&&bi5[i]!==null&&bi5[i]>P.bias_sell&&mc.bar[i]<0&&mc.bar[i-1]>=0},
+    // === 技术指标 (收盘确认) ===
+    {n:`RSI(${P.rsi_period}) ${P.rsi_buy}/${P.rsi_sell}`,c:'RSI',e:'close',b:i=>i>0&&r14[i]>P.rsi_buy&&r14[i-1]<=P.rsi_buy,s:i=>i>0&&r14[i]<P.rsi_sell&&r14[i-1]>=P.rsi_sell},
+    {n:'MACD金叉/死叉',c:'MACD',e:'close',b:i=>i>0&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
+    {n:'MACD柱反转',c:'MACD',e:'close',b:i=>i>2&&mc.bar[i]>mc.bar[i-1]&&mc.bar[i-1]<mc.bar[i-2]&&mc.bar[i]<0,s:i=>i>2&&mc.bar[i]<mc.bar[i-1]&&mc.bar[i-1]>mc.bar[i-2]&&mc.bar[i]>0},
+    {n:`BOLL(${P.boll_p},${P.boll_m})反弹`,c:'BOLL',e:'trigger',tp:i=>b10[i].l,b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&d[i].c>d[i].o,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&d[i].c<d[i].o},
+    {n:'BOLL(20,2)反弹',c:'BOLL',e:'trigger',tp:i=>b20[i].l,b:i=>b20[i].l!==null&&d[i].l<=b20[i].l&&d[i].c>d[i].o,s:i=>b20[i].u!==null&&d[i].h>=b20[i].u&&d[i].c<d[i].o},
+    {n:'BOLL缩口突破',c:'BOLL',e:'close',b:i=>{if(i<3||!b10[i].u)return false;const bw0=(b10[i].u-b10[i].l)/b10[i].m,bw1=(b10[i-1].u-b10[i-1].l)/b10[i-1].m;return bw0>bw1&&bw1<0.08&&isGreen(i);},s:()=>false},
+    {n:'MA5/10交叉',c:'均线',e:'close',b:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]>m10[i]&&m5[i-1]<=m10[i-1],s:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]<m10[i]&&m5[i-1]>=m10[i-1]},
+    {n:'MA10/20交叉',c:'均线',e:'close',b:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]>m20[i]&&m10[i-1]<=m20[i-1],s:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]<m20[i]&&m10[i-1]>=m20[i-1]},
+    {n:'MA多头回踩MA10',c:'均线',e:'trigger',tp:i=>m10[i],b:i=>i>1&&m5[i]&&m10[i]&&m20[i]&&m5[i]>m10[i]&&m10[i]>m20[i]&&d[i].l<=m10[i]*1.01&&d[i].c>m10[i]&&isGreen(i),s:()=>false},
+    {n:`BIAS${P.bias_ma} <${P.bias_buy}%反弹`,c:'乖离率',e:'close',b:i=>i>0&&bi5[i]!==null&&bi5[i]>P.bias_buy&&bi5[i-1]<=P.bias_buy,s:i=>i>0&&bi5[i]!==null&&bi5[i]<P.bias_sell&&bi5[i-1]>=P.bias_sell},
+    {n:`KDJ低位金叉(<${P.kdj_low})`,c:'KDJ',e:'close',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low,s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>P.kdj_high},
+
+    // === K线形态 (盘中可观察，但需收盘确认形态) ===
+    {n:'🔨 锤子线(下影>2x实体)',c:'K线',e:'close',
+      b:i=>i>0&&lowerShadow(i)>body(i)*2&&upperShadow(i)<body(i)*0.5&&isGreen(i)&&pctChg(i-1)<0,
+      s:i=>i>0&&upperShadow(i)>body(i)*2&&lowerShadow(i)<body(i)*0.5&&!isGreen(i)&&pctChg(i-1)>0},
+    {n:'🔄 看涨吞没',c:'K线',e:'close',
+      b:i=>i>0&&!isGreen(i-1)&&isGreen(i)&&d[i].o<=d[i-1].c&&d[i].c>=d[i-1].o&&body(i)>body(i-1)*1.2,
+      s:i=>i>0&&isGreen(i-1)&&!isGreen(i)&&d[i].o>=d[i-1].c&&d[i].c<=d[i-1].o&&body(i)>body(i-1)*1.2},
+    {n:'✚ 十字星(实体<振幅15%)',c:'K线',e:'close',
+      b:i=>i>0&&body(i)<range(i)*0.15&&range(i)>d[i].c*0.02&&pctChg(i-1)<-0.03,
+      s:i=>i>0&&body(i)<range(i)*0.15&&range(i)>d[i].c*0.02&&pctChg(i-1)>0.03},
+    {n:'📦 内包线突破',c:'K线',e:'close',
+      b:i=>i>1&&d[i-1].h<d[i-2].h&&d[i-1].l>d[i-2].l&&d[i].c>d[i-1].h&&isGreen(i),
+      s:i=>i>1&&d[i-1].h<d[i-2].h&&d[i-1].l>d[i-2].l&&d[i].c<d[i-1].l&&!isGreen(i)},
+    {n:'📏 长下影线(>振幅60%)',c:'K线',e:'close',
+      b:i=>i>0&&lowerShadow(i)>range(i)*0.6&&isGreen(i)&&range(i)>d[i].c*0.02,
+      s:()=>false},
+
+    // === 量价 ===
+    {n:'放量阳线',c:'量价',e:'close',b:i=>{if(i<P.vol_lookback)return false;return d[i].v>avgVol(i,P.vol_lookback)*P.vol_mult&&isGreen(i);},s:i=>{if(i<P.vol_lookback)return false;return d[i].v>avgVol(i,P.vol_lookback)*P.vol_mult&&!isGreen(i);}},
+    {n:'缩量回调+阳线',c:'量价',e:'close',
+      b:i=>{if(i<3)return false;return d[i].v<avgVol(i,5)*0.6&&isGreen(i)&&pctChg(i-1)<0&&pctChg(i-2)<0;},
+      s:()=>false},
+    {n:'量价背离(价新高量萎缩)',c:'量价',e:'close',
+      b:()=>false,
+      s:i=>{if(i<5)return false;const h5=Math.max(...d.slice(i-4,i).map(x=>x.h));return d[i].h>h5&&d[i].v<avgVol(i,5)*0.7&&!isGreen(i);}},
+
+    // === 组合 ===
+    {n:`RSI<${P.rsi_combo_buy}+MACD金叉`,c:'组合',e:'close',b:i=>i>0&&r14[i]<P.rsi_combo_buy&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&r14[i]>P.rsi_combo_sell&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
+    {n:`BOLL+RSI<${P.rsi_combo_buy}`,c:'组合',e:'trigger',tp:i=>b10[i].l,b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&r14[i]<P.rsi_combo_buy,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&r14[i]>65},
+    {n:`BIAS<${P.bias_buy}+MACD翻正`,c:'组合',e:'close',b:i=>i>1&&bi5[i]!==null&&bi5[i]<P.bias_buy&&mc.bar[i]>0&&mc.bar[i-1]<=0,s:i=>i>1&&bi5[i]!==null&&bi5[i]>P.bias_sell&&mc.bar[i]<0&&mc.bar[i-1]>=0},
+    {n:'锤子+BOLL下轨',c:'组合',e:'trigger',tp:i=>b10[i].l,b:i=>i>0&&b10[i].l!==null&&d[i].l<=b10[i].l&&lowerShadow(i)>body(i)*1.5&&isGreen(i),s:()=>false},
+    {n:'吞没+放量(>2x)',c:'组合',e:'close',b:i=>{if(i<2)return false;return!isGreen(i-1)&&isGreen(i)&&d[i].o<=d[i-1].c&&d[i].c>=d[i-1].o&&d[i].v>avgVol(i,10)*2;},s:()=>false},
+    {n:'KDJ金叉+锤子线',c:'组合',e:'close',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low&&lowerShadow(i)>body(i)*1.5,s:()=>false},
+    {n:'三连跌后阳线反转',c:'组合',e:'close',b:i=>i>3&&pctChg(i-3)<0&&pctChg(i-2)<0&&pctChg(i-1)<0&&isGreen(i)&&body(i)>body(i-1)*1.2,s:()=>false},
+    {n:'RSI超卖+长下影线',c:'组合',e:'close',b:i=>i>0&&r14[i]<35&&lowerShadow(i)>range(i)*0.5&&isGreen(i),s:()=>false},
   ];
-  return S.map(s=>{const tr=[];for(let i=0;i<d.length;i++){if(s.b(i))tr.push({t:'B',i,p:d[i].c,d:d[i].d});if(s.s(i))tr.push({t:'S',i,p:d[i].c,d:d[i].d});}
-    const hr={};[1,3,5].forEach(n2=>{const bs=tr.filter(t=>t.t==='B');let w=0,lo=0,tot=0;const details=[];bs.forEach(b=>{const ei=Math.min(b.i+n2,d.length-1);if(ei<=b.i)return;const r2=(d[ei].c-b.p)/b.p;tot+=r2;r2>0?w++:lo++;details.push({entry:b.d,entryP:b.p,exitP:d[ei].c,ret:r2,win:r2>0});});const ct=w+lo;hr[n2]={ct,wr:ct?w/ct:0,ar:ct?tot/ct:0,details};});
-    const li=d.length-1;return{...s,tr,hr,bT:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B').length};
+  const MODE=P.entry_mode; // 'next_open' | 'same_close' | 'trigger'
+  const MODES={next_open:'T+1开盘',same_close:'当日尾盘',trigger:'盘中触发'};
+
+  return S.map(s=>{
+    const tr=[];
+    for(let i=0;i<d.length;i++){
+      if(s.b(i))tr.push({t:'B',i,sigP:d[i].c,d:d[i].d,trigP:s.tp?s.tp(i):null});
+      if(s.s(i))tr.push({t:'S',i,sigP:d[i].c,d:d[i].d});
+    }
+    const hr={};[1,3,5].forEach(n2=>{
+      const bs=tr.filter(t=>t.t==='B');
+      let w=0,lo=0,tot=0,totMx=0,totMd=0;const details=[];
+      bs.forEach(b=>{
+        // Determine entry price and index based on mode
+        let entryP,entryIdx,entryLabel;
+        if(MODE==='next_open'){
+          entryIdx=b.i+1;
+          if(entryIdx>=d.length)return;
+          entryP=d[entryIdx].o;
+          entryLabel='T+1开';
+        }else if(MODE==='trigger'&&s.e==='trigger'&&b.trigP){
+          // Trigger-price strategies: enter at trigger price on signal day
+          entryIdx=b.i;
+          entryP=b.trigP;
+          entryLabel='触发';
+        }else{
+          // same_close or fallback: enter at signal day close
+          entryIdx=b.i;
+          entryP=d[b.i].c;
+          entryLabel='尾盘';
+        }
+        const exitIdx=Math.min(entryIdx+n2,d.length-1);
+        if(exitIdx<=entryIdx&&n2>0)return;
+        const exitP=d[exitIdx].c;
+        // Scan holding period for max high / min low
+        let maxH=entryP,minL=entryP;
+        for(let k=entryIdx;k<=exitIdx;k++){
+          if(d[k].h>maxH)maxH=d[k].h;
+          if(d[k].l<minL)minL=d[k].l;
+        }
+        const ret=(exitP-entryP)/entryP;
+        const mxUp=(maxH-entryP)/entryP;
+        const mxDn=(minL-entryP)/entryP;
+        tot+=ret;totMx+=mxUp;totMd+=mxDn;
+        ret>0?w++:lo++;
+        details.push({
+          sigDate:b.d, entryDate:d[entryIdx].d, entryLabel,
+          entryP, exitP, ret, win:ret>0,
+          maxH, minL, mxUp, mxDn,
+          entryIdx, exitIdx
+        });
+      });
+      const ct=w+lo;
+      hr[n2]={ct, wr:ct?w/ct:0, ar:ct?tot/ct:0, amx:ct?totMx/ct:0, amd:ct?totMd/ct:0, details};
+    });
+    const li=d.length-1;
+    return{...s,tr,hr,bT:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B').length,entryType:s.e};
   });
 }
 
@@ -366,6 +467,19 @@ function go(data,live){
   <div class="card" id="param-card">
     <div class="card-t" style="cursor:pointer" onclick="document.getElementById('param-body').style.display=document.getElementById('param-body').style.display==='none'?'block':'none'">⚙️ 策略参数 <span style="font-size:10px;color:var(--dm);font-weight:400">点击展开</span></div>
     <div id="param-body" style="display:none">
+      <div class="param-section" style="padding:8px 10px;background:var(--c2);border-radius:8px;margin-bottom:10px">
+        <div class="param-label" style="color:var(--yl)">📍 入场方式（影响所有回测结果）</div>
+        <div class="param-panel">
+          <div class="param-chip ${PARAMS.entry_mode==='same_close'?'active':''}" onclick="setP('entry_mode','same_close')" style="flex:1;text-align:center">当日尾盘<br><span style="font-size:9px;opacity:.7">盯盘，收盘前下单</span></div>
+          <div class="param-chip ${PARAMS.entry_mode==='next_open'?'active':''}" onclick="setP('entry_mode','next_open')" style="flex:1;text-align:center">T+1 开盘<br><span style="font-size:9px;opacity:.7">保守，隔日开盘买</span></div>
+          <div class="param-chip ${PARAMS.entry_mode==='trigger'?'active':''}" onclick="setP('entry_mode','trigger')" style="flex:1;text-align:center">盘中触发价<br><span style="font-size:9px;opacity:.7">限价单挂BOLL/MA</span></div>
+        </div>
+        <div style="font-size:9px;color:var(--dm);margin-top:6px;line-height:1.5">
+          · <b>当日尾盘</b>: 看到信号成形，收盘前市价买入（入场价=当日收盘）<br>
+          · <b>T+1开盘</b>: 收盘确认信号，隔日开盘买入（入场价=次日开盘）<br>
+          · <b>盘中触发</b>: BOLL/MA类策略按触发价入场（限价单），其余按尾盘价
+        </div>
+      </div>
       <div class="param-section"><div class="param-label">BOLL 周期</div><div class="param-panel">
         ${[8,10,12,15,20].map(v=>`<div class="param-chip ${PARAMS.boll_p===v?'active':''}" onclick="setP('boll_p',${v})">${v}</div>`).join('')}
       </div></div>
@@ -408,7 +522,7 @@ function go(data,live){
       <div style="height:160px;position:relative"><canvas id="c2"></canvas></div></div>
   </div><div class="c4">
     <div class="card" style="border-color:${tB.length?'var(--gn)':tS.length?'var(--rd)':'var(--bd)'}">
-      <div class="card-t">🚨 今日信号</div>
+      <div class="card-t">🚨 今日信号 <span style="font-size:10px;color:var(--dm);font-weight:400">→ ${PARAMS.entry_mode==='next_open'?'明日开盘操作':PARAMS.entry_mode==='trigger'?'挂限价单/尾盘操作':'收盘前操作'}</span></div>
       ${!tB.length&&!tS.length?'<div style="color:var(--dm);font-size:12px">无信号 — 继续等待</div>':''}
       ${tB.map(r=>`<div class="sig sb"><span style="color:var(--gn);font-weight:800">买</span><span style="flex:1;font-size:12px">${r.n}</span><span class="mono" style="font-weight:800;color:${cc(r.hr[3]?.wr||0)}">${((r.hr[3]?.wr||0)*100).toFixed(0)}%</span></div>`).join('')}
       ${tS.map(r=>`<div class="sig ss"><span style="color:var(--rd);font-weight:800">卖</span><span style="flex:1;font-size:12px">${r.n}</span></div>`).join('')}
@@ -448,49 +562,84 @@ function go(data,live){
 
   <div class="c6">
   <!-- ====== STRATEGY RANKING WITH EXPANDABLE DETAILS ====== -->
-  <div class="card"><div class="card-t">🏆 策略排行 (3日胜率) <span style="font-size:10px;color:var(--dm);font-weight:400">点击展开明细</span></div><div style="overflow-x:auto"><table>
-    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>今</th></tr></thead>
-    <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0},h5=r.hr[5]||{wr:0,ar:0};
+  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 持有N日收盘卖出 · 点击展开</span></div><div style="overflow-x:auto"><table>
+    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>盘中↓</th><th>今</th></tr></thead>
+    <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0,amx:0,amd:0},h5=r.hr[5]||{wr:0,ar:0};
       const detailId='sd'+i;
       // Build trade list for detail
       const buys=r.tr.filter(t=>t.t==='B');
+      const MODE=PARAMS.entry_mode;
       const tradeRows=buys.slice(-15).reverse().map(b=>{
-        const ei1=Math.min(b.i+1,data.length-1),ei3=Math.min(b.i+3,data.length-1),ei5=Math.min(b.i+5,data.length-1);
-        const r1=ei1>b.i?((data[ei1].c-b.p)/b.p*100).toFixed(1):'—';
-        const r3=ei3>b.i?((data[ei3].c-b.p)/b.p*100).toFixed(1):'—';
-        const r5=ei5>b.i?((data[ei5].c-b.p)/b.p*100).toFixed(1):'—';
-        return`<div class="trade-item">
-          <span class="mono" style="color:var(--dm);min-width:44px">${b.d.slice(5)}</span>
-          <span class="mono" style="min-width:44px">${b.p.toFixed(0)}</span>
-          <span class="mono" style="min-width:40px;color:${parseFloat(r1)>=0?'var(--gn)':'var(--rd)'}">${r1}%</span>
-          <span class="mono" style="min-width:40px;color:${parseFloat(r3)>=0?'var(--gn)':'var(--rd)'}">${r3}%</span>
-          <span class="mono" style="min-width:40px;color:${parseFloat(r5)>=0?'var(--gn)':'var(--rd)'}">${r5}%</span>
+        // Same entry logic as backtest
+        let entryP,entryIdx,entryLabel;
+        if(MODE==='next_open'){
+          entryIdx=b.i+1;if(entryIdx>=data.length)return'';
+          entryP=data[entryIdx].o;entryLabel='T+1开';
+        }else if(MODE==='trigger'&&r.e==='trigger'&&b.trigP){
+          entryIdx=b.i;entryP=b.trigP;entryLabel='触发';
+        }else{
+          entryIdx=b.i;entryP=data[b.i].c;entryLabel='尾盘';
+        }
+        function periodStats(n2){
+          const exitIdx=Math.min(entryIdx+n2,data.length-1);
+          if(exitIdx<entryIdx||(n2>0&&exitIdx<=entryIdx))return{ret:'—',mxUp:'—',mxDn:'—'};
+          let maxH=entryP,minL=entryP;
+          for(let k=entryIdx;k<=exitIdx;k++){if(data[k].h>maxH)maxH=data[k].h;if(data[k].l<minL)minL=data[k].l;}
+          const ret=((data[exitIdx].c-entryP)/entryP*100).toFixed(1);
+          const mxUp=((maxH-entryP)/entryP*100).toFixed(1);
+          const mxDn=((minL-entryP)/entryP*100).toFixed(1);
+          return{ret,mxUp,mxDn};
+        }
+        const s1=periodStats(1),s3=periodStats(3),s5=periodStats(5);
+        return`<div class="trade-item" style="display:grid;grid-template-columns:46px 36px 44px repeat(3,1fr);gap:4px;align-items:start;padding:4px 0;border-bottom:1px solid #1e294015">
+          <span class="mono" style="color:var(--dm)">${b.d.slice(5)}</span>
+          <span class="mono" style="font-size:10px;color:var(--dm)">${b.sigP.toFixed(0)}</span>
+          <span style="font-size:10px"><span class="mono" style="color:var(--ac)">${entryP.toFixed(0)}</span><br><span style="color:var(--dm)">${entryLabel}</span></span>
+          <span style="font-size:10px"><span class="mono" style="color:${parseFloat(s1.ret)>=0?'var(--gn)':'var(--rd)'}">${s1.ret}%</span><br><span style="color:var(--dm)">↑${s1.mxUp}% ↓${s1.mxDn}%</span></span>
+          <span style="font-size:10px"><span class="mono" style="color:${parseFloat(s3.ret)>=0?'var(--gn)':'var(--rd)'}">${s3.ret}%</span><br><span style="color:var(--dm)">↑${s3.mxUp}% ↓${s3.mxDn}%</span></span>
+          <span style="font-size:10px"><span class="mono" style="color:${parseFloat(s5.ret)>=0?'var(--gn)':'var(--rd)'}">${s5.ret}%</span><br><span style="color:var(--dm)">↑${s5.mxUp}% ↓${s5.mxDn}%</span></span>
         </div>`;
       }).join('');
 
-      return`<tr class="str-row" onclick="toggleDetail('${detailId}',this)"><td style="color:var(--dm);font-weight:700">${i+1}</td><td style="font-weight:600">${r.n}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
+      return`<tr class="str-row" onclick="toggleDetail('${detailId}',this)"><td style="color:var(--dm);font-weight:700">${i+1}</td><td style="font-weight:600">${r.n}${PARAMS.entry_mode==='trigger'&&r.entryType==='trigger'?' <span style="font-size:8px;padding:1px 4px;background:var(--ac);color:#fff;border-radius:3px">限价</span>':''}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
       <td class="mono" style="color:${cc(h1.wr)};font-weight:700">${(h1.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${cc(h3.wr)};font-weight:700">${(h3.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${cc(h5.wr)};font-weight:700">${(h5.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${h3.ar>=0?'var(--gn)':'var(--rd)'}">${h3.ar>=0?'+':''}${(h3.ar*100).toFixed(1)}%</td>
+      <td class="mono" style="color:var(--rd)">${((h3.amd||0)*100).toFixed(1)}%</td>
       <td>${r.bT?'<b style="color:var(--gn)">买</b>':r.sT?'<b style="color:var(--rd)">卖</b>':'—'}</td></tr>
-      <tr class="str-detail" id="${detailId}"><td colspan="9">
+      <tr class="str-detail" id="${detailId}"><td colspan="10">
         <div class="dt-grid">
-          <div class="dt-box"><div class="dt-l">1日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h1.wr)}">${(h1.wr*100).toFixed(0)}%</b> / <span class="mono">${((h1.ar||0)*100).toFixed(1)}%</span></div>
-          <div class="dt-box"><div class="dt-l">3日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h3.wr)}">${(h3.wr*100).toFixed(0)}%</b> / <span class="mono">${(h3.ar*100).toFixed(1)}%</span></div>
-          <div class="dt-box"><div class="dt-l">5日胜率 / 平均报酬</div><b class="mono" style="color:${cc(h5.wr)}">${(h5.wr*100).toFixed(0)}%</b> / <span class="mono">${(h5.ar*100).toFixed(1)}%</span></div>
-          <div class="dt-box"><div class="dt-l">买入次数 / 卖出次数</div><span class="mono">${r.tr.filter(t=>t.t==='B').length} / ${r.tr.filter(t=>t.t==='S').length}</span></div>
+          <div class="dt-box"><div class="dt-l">1日 胜率/报酬</div><b class="mono" style="color:${cc(h1.wr)}">${(h1.wr*100).toFixed(0)}%</b> / <span class="mono">${((h1.ar||0)*100).toFixed(1)}%</span>
+            <div style="font-size:9px;color:var(--dm);margin-top:2px">盘中↑<span style="color:var(--gn)">${((h1.amx||0)*100).toFixed(1)}%</span> ↓<span style="color:var(--rd)">${((h1.amd||0)*100).toFixed(1)}%</span></div></div>
+          <div class="dt-box"><div class="dt-l">3日 胜率/报酬</div><b class="mono" style="color:${cc(h3.wr)}">${(h3.wr*100).toFixed(0)}%</b> / <span class="mono">${(h3.ar*100).toFixed(1)}%</span>
+            <div style="font-size:9px;color:var(--dm);margin-top:2px">盘中↑<span style="color:var(--gn)">${((h3.amx||0)*100).toFixed(1)}%</span> ↓<span style="color:var(--rd)">${((h3.amd||0)*100).toFixed(1)}%</span></div></div>
+          <div class="dt-box"><div class="dt-l">5日 胜率/报酬</div><b class="mono" style="color:${cc(h5.wr)}">${(h5.wr*100).toFixed(0)}%</b> / <span class="mono">${(h5.ar*100).toFixed(1)}%</span>
+            <div style="font-size:9px;color:var(--dm);margin-top:2px">盘中↑<span style="color:var(--gn)">${((h5.amx||0)*100).toFixed(1)}%</span> ↓<span style="color:var(--rd)">${((h5.amd||0)*100).toFixed(1)}%</span></div></div>
+          <div class="dt-box"><div class="dt-l">买/卖次数</div><span class="mono">${r.tr.filter(t=>t.t==='B').length} / ${r.tr.filter(t=>t.t==='S').length}</span>
+            <div style="font-size:9px;color:var(--dm);margin-top:2px">风险报酬比(3日): <b class="mono" style="color:var(--yl)">${h3.amd?((h3.amx||0)/Math.abs(h3.amd)).toFixed(1):'—'}</b></div></div>
         </div>
-        <div style="margin-top:8px;font-size:10px;color:var(--dm)">最近15笔买入信号明细 <span style="color:var(--ac)">日期 · 买价 · 1日 · 3日 · 5日</span></div>
+        <div style="margin-top:8px;font-size:10px;color:var(--dm)">最近15笔买入明细 <span style="color:var(--ac)">信号日 · 收盘价 · 买入价(方式) · 持有1日(↑↓) · 3日(↑↓) · 5日(↑↓)</span></div>
         <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
       </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
-  <div style="font-size:9px;color:var(--dm);text-align:center;padding:12px 0;border-top:1px solid var(--bd)">
-    ⚠️ ${live?'Yahoo Finance实时':'离线近似'}数据 · 样本极小 · 不构成投资建议 · 每5分钟自动刷新
+  <div style="font-size:9px;color:var(--dm);text-align:center;padding:16px 0;border-top:1px solid var(--bd)">
+    <div style="max-width:720px;margin:0 auto;text-align:left;line-height:1.6">
+      <b style="color:var(--or)">⚠️ 风险警告</b><br>
+      · 本工具仅为个人学习使用的技术分析辅助面板，<b style="color:var(--rd)">不构成任何投资建议</b><br>
+      · 数据来源: ${live?lastFetchSrc||'在线':'离线近似'} · 日线级别OHLCV · 每5分钟自动刷新<br>
+      · 回测基于 IPO 以来约 ${data.length} 个交易日，样本极小，统计意义有限<br>
+      · 回测逻辑: 信号确认 → 按「${PARAMS.entry_mode==='next_open'?'T+1开盘价':PARAMS.entry_mode==='trigger'?'盘中触发价/尾盘价':'当日尾盘价'}」买入 → 持有N日后收盘卖出<br>
+      · 入场方式可切换: 当日尾盘(盯盘下单) / T+1开盘(保守) / 盘中触发(BOLL·MA限价单)<br>
+      · 盘中最大浮盈/回撤 = 持有期间每日最高/最低价 vs 实际买入价，反映持有期间真实波动风险<br>
+      · K线形态识别(锤子/吞没/十字星等)基于日线 OHLC 四价，不含分时数据<br>
+      · 智谱为2026年1月上市次新股，流通盘极小(H股仅~8.5%)，波动剧烈，技术指标参考价值受限<br>
+      · 解禁数据来源于招股书，实际减持行为取决于市场条件及股东意愿
+    </div>
     ${!live?`<div style="margin-top:6px;text-align:left;background:var(--c2);padding:8px;border-radius:6px;color:var(--rd)">
-      <b>⚠️ 数据获取失败，显示离线数据。</b> 代理尝试记录：<br>
+      <b>⚠️ 数据获取失败，显示离线数据（可能不准确）。</b> 尝试记录：<br>
       ${fetchLog.map(l=>`<span style="color:${l.status.startsWith('✅')?'var(--gn)':'var(--rd)'}">· [${l.src}] ${l.url}... → ${l.status}</span><br>`).join('')}
-      <div style="margin-top:4px;color:var(--yl)">💡 可尝试：1) 刷新页面重试 2) 换浏览器/网络 3) 手动输入今日收盘价</div>
+      <div style="margin-top:4px;color:var(--yl)">💡 可尝试：1) 刷新重试 2) 换浏览器/网络 3) 点「＋ 输入」手动填今日收盘价</div>
     </div>`:''}</div>`;
 
   setTimeout(()=>dc(data,I),80);
