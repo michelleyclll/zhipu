@@ -327,22 +327,55 @@ function drawChart(tf){
     const n=cd.length-1;
     if(infoEl)infoEl.innerHTML=maLabels.map((l,i)=>`<span style="color:${maColors[i]}">●${l}:${maList[i][n]?.toFixed(0)||'—'}</span>`).join(' ');
   }
-  // Main price chart — red up, green down per segment
-  const priceData=cd.map(x=>x.c);
-  const datasets=[{label:'收盘',data:priceData,borderWidth:2,pointRadius:0,tension:0,fill:false,
-    segment:{borderColor:ctx=>{const v0=ctx.p0.parsed.y,v1=ctx.p1.parsed.y;return v1>=v0?'#f87171':'#34d399';}},
-    borderColor:'#cdd5e0'}];
-  maList.forEach((ma,i)=>datasets.push({label:maLabels[i],data:ma,borderColor:maColors[i],borderWidth:1.2,pointRadius:0,tension:.3,fill:maLabels[i]==='BOLL↓'?'+1':false,backgroundColor:maLabels[i]==='BOLL↓'?'#34d39908':'transparent',borderDash:['MA30','MA60','VWAP'].includes(maLabels[i])?[4,3]:[]}));
+  // === Candlestick chart ===
+  // Candle bodies = floating bars [min(o,c), max(o,c)]
+  const candleBody=cd.map(x=>[Math.min(x.o,x.c),Math.max(x.o,x.c)]);
+  const candleColor=cd.map(x=>x.c>=x.o?'#f87171':'#34d399');
+  const candleBorder=cd.map(x=>x.c>=x.o?'#ef4444':'#10b981');
+  // Volume bars (scaled to bottom 15% of chart)
+  const maxV=Math.max(...cd.map(x=>x.v))||1;
+  const priceMin=Math.min(...cd.map(x=>x.l)),priceMax=Math.max(...cd.map(x=>x.h));
+  const volScale=(priceMax-priceMin)*0.18;
+  const volData=cd.map(x=>[priceMin,priceMin+x.v/maxV*volScale]);
+  const volColor=cd.map(x=>x.c>=x.o?'#f8717130':'#34d39930');
+
+  const datasets=[
+    {label:'成交量',type:'bar',data:volData,backgroundColor:volColor,borderWidth:0,barPercentage:.6,categoryPercentage:.9,order:3,yAxisID:'y'},
+    {label:'K线',type:'bar',data:candleBody,backgroundColor:candleColor,borderColor:candleBorder,borderWidth:1,barPercentage:.6,categoryPercentage:.9,order:2,yAxisID:'y'},
+  ];
+  // MA overlays as line datasets
+  maList.forEach((ma,i)=>datasets.push({label:maLabels[i],type:'line',data:ma,borderColor:maColors[i],borderWidth:1.2,pointRadius:0,tension:.3,fill:maLabels[i]==='BOLL↓'?'+1':false,backgroundColor:maLabels[i]==='BOLL↓'?'#34d39908':'transparent',borderDash:['MA30','MA60','VWAP'].includes(maLabels[i])?[4,3]:[],order:1,yAxisID:'y'}));
+
+  // Wick plugin — draws high/low lines through each candle
+  const wickPlugin={id:'wick',afterDatasetsDraw(chart){
+    const meta=chart.getDatasetMeta(1); // candle body dataset index
+    const ctx=chart.ctx;
+    meta.data.forEach((bar,i)=>{
+      if(!cd[i])return;
+      const x=bar.x,yScale=chart.scales.y;
+      const yHigh=yScale.getPixelForValue(cd[i].h);
+      const yLow=yScale.getPixelForValue(cd[i].l);
+      ctx.beginPath();ctx.strokeStyle=candleBorder[i];ctx.lineWidth=1;
+      ctx.moveTo(x,yHigh);ctx.lineTo(x,yLow);ctx.stroke();
+    });
+  }};
+
   const an={};
   if(showNews)NW.forEach(e=>{const idx=cd.findIndex(x=>x.d===e.d);if(idx<0)return;
     an['e'+idx]={type:'line',xMin:idx,xMax:idx,borderColor:e.p==='b'?'#34d39935':e.p==='r'?'#f8717135':'#fbbf2435',borderWidth:1,borderDash:[3,3],
       label:{display:true,content:e.t.slice(0,8),position:'start',font:{size:9},color:'#67e8f9',backgroundColor:'#0e142088',padding:{x:3,y:1}}};});
 
-  ch1=new Chart(document.getElementById('c1'),{type:'line',
-    data:{labels:lb,datasets},options:{responsive:true,maintainAspectRatio:false,
+  ch1=new Chart(document.getElementById('c1'),{type:'bar',
+    data:{labels:lb,datasets},
+    plugins:[wickPlugin],
+    options:{responsive:true,maintainAspectRatio:false,
       scales:{x:{ticks:{color:'#556070',font:{size:currentTF==='5m'?9:10},maxTicksLimit:currentTF==='5m'?16:14,maxRotation:0},grid:{color:'#1e294012'}},
         y:{position:'right',ticks:{color:'#556070',font:{size:11,family:'SF Mono,monospace'},callback:v=>v.toFixed(0)},grid:{color:'#1e294025'}}},
-      plugins:{legend:{display:false},annotation:{annotations:an},tooltip:{mode:'index',intersect:false}},interaction:{mode:'index',intersect:false}}});
+      plugins:{legend:{display:false},annotation:{annotations:an},tooltip:{mode:'index',intersect:false,callbacks:{
+        label:ctx=>{if(ctx.datasetIndex===1){const d2=cd[ctx.dataIndex];return`开${d2.o} 高${d2.h} 低${d2.l} 收${d2.c}`;}
+          if(ctx.datasetIndex===0)return`量 ${(cd[ctx.dataIndex].v/1e4).toFixed(0)}万`;
+          return`${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)||'—'}`;}
+      }}},interaction:{mode:'index',intersect:false}}});
 
   // MACD sub-chart
   if(showMACD){
@@ -662,7 +695,7 @@ function go(data,live){
           <span style="color:var(--pu)">●MA20:${cr.ma20?.toFixed(0)||'—'}</span><span style="color:var(--or)">●MA30:${cr.ma30?.toFixed(0)||'—'}</span>
         </div>
       </div>
-      <div style="height:420px;position:relative"><canvas id="c1"></canvas></div>
+      <div style="height:480px;position:relative"><canvas id="c1"></canvas></div>
     </div>
     <div id="macd-wrap" class="card"><div style="font-size:11px;color:var(--dm);margin-bottom:4px">MACD(12,26,9) <span style="color:var(--ac)">DIF:${cr.dif.toFixed(1)}</span> <span style="color:var(--or)">DEA:${cr.dea.toFixed(1)}</span> <span style="color:${cr.bar>0?'var(--gn)':'var(--rd)'}">柱:${cr.bar.toFixed(1)}</span></div>
       <div style="height:160px;position:relative"><canvas id="c2"></canvas></div></div>
