@@ -426,8 +426,6 @@ let PARAMS={
   vol_mult:2, vol_lookback:10,
   // Entry mode
   entry_mode:'trigger',
-  // Range trading (grid)
-  range_buy:950, range_sell:1000,
 };
 
 // Indicators
@@ -513,13 +511,59 @@ function stBt(d,I){
     {n:'RSI超卖+长下影线',c:'组合',e:'trigger',
       tp:i=>d[i].l+range(i)*0.3,
       b:i=>i>0&&r14[i]<35&&lowerShadow(i)>range(i)*0.5&&isGreen(i),s:()=>false},
-
-    // === 区间交易 (grid) ===
-    {n:`📊 区间 ${P.range_buy}→${P.range_sell}`,c:'区间',e:'trigger',
-      tp:()=>P.range_buy,
-      b:i=>d[i].l<=P.range_buy,
-      s:i=>d[i].h>=P.range_sell},
   ];
+
+  // === Dynamic range strategies (buy/sell levels recalculated daily) ===
+  // ATR for volatility scaling
+  const atr14=[];{let a=0;for(let i=0;i<d.length;i++){
+    const tr=i===0?d[0].h-d[0].l:Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c));
+    if(i<14){a+=tr/14;atr14.push(a);}else{a=(a*13+tr)/14;atr14.push(a);}}}
+
+  const dynRanges=[
+    {name:'BOLL(10,1.5)区间',desc:'下轨买·上轨卖',
+      buyAt:i=>b10[i].l,sellAt:i=>b10[i].u},
+    {name:'BOLL(20,2)区间',desc:'下轨买·上轨卖',
+      buyAt:i=>I.b20[i].l,sellAt:i=>I.b20[i].u},
+    {name:'MA10±3%通道',desc:'MA10下3%买·上3%卖',
+      buyAt:i=>m10[i]?m10[i]*0.97:null,sellAt:i=>m10[i]?m10[i]*1.03:null},
+    {name:'MA20±ATR通道',desc:'MA20-ATR买·+ATR卖',
+      buyAt:i=>m20[i]?m20[i]-atr14[i]:null,sellAt:i=>m20[i]?m20[i]+atr14[i]:null},
+    {name:'MA5均值回归±5%',desc:'MA5下5%买·上5%卖',
+      buyAt:i=>m5[i]?m5[i]*0.95:null,sellAt:i=>m5[i]?m5[i]*1.05:null},
+    {name:'MA10±ATR×0.8',desc:'窄通道·快进快出',
+      buyAt:i=>m10[i]?m10[i]-atr14[i]*0.8:null,sellAt:i=>m10[i]?m10[i]+atr14[i]*0.8:null},
+  ];
+
+  // Simulate each dynamic range
+  const dynResults=dynRanges.map(dr=>{
+    const trades=[];let holding=false,entryP=0,entryIdx=0,entryDate='';
+    for(let i=1;i<d.length;i++){
+      const bl=dr.buyAt(i),sl=dr.sellAt(i);
+      if(!bl||!sl||sl<=bl)continue;
+      if(!holding&&d[i].l<=bl){holding=true;entryP=bl;entryIdx=i;entryDate=d[i].d;}
+      else if(holding){
+        const curSell=dr.sellAt(i);
+        if(curSell&&d[i].h>=curSell){
+          const ret=(curSell-entryP)/entryP*100;
+          trades.push({bd:entryDate,sd:d[i].d,days:i-entryIdx,bp:entryP,sp:curSell,ret});
+          holding=false;
+        }
+      }
+    }
+    const rounds=trades.length,totalDays=trades.reduce((s,t)=>s+t.days,0);
+    const avgDays=rounds?totalDays/rounds:0;
+    const avgRet=rounds?trades.reduce((s,t)=>s+t.ret,0)/rounds:0;
+    const eq=trades.reduce((e,t)=>e*(1+t.ret/100),10000);
+    const dailyEff=avgDays?avgRet/avgDays:0;
+    // Current levels
+    const curBuy=dr.buyAt(d.length-1),curSell=dr.sellAt(d.length-1);
+    const holdingNow=holding;const holdDays=holding?d.length-1-entryIdx:0;
+    const curPnl=holding?((d[d.length-1].c-entryP)/entryP*100):0;
+    return{...dr,trades,rounds,avgDays,avgRet,eq,dailyEff,curBuy,curSell,holdingNow,holdDays,entryP,curPnl};
+  });
+  dynResults.sort((a,b)=>b.dailyEff-a.dailyEff);
+  // Store for rendering
+  window._dynResults=dynResults;
   const MODE=P.entry_mode; // 'next_open' | 'same_close' | 'trigger'
   const MODES={next_open:'T+1开盘',same_close:'当日尾盘',trigger:'盘中触发'};
 
@@ -758,22 +802,6 @@ function go(data,live){
       <div class="param-section"><div class="param-label">放量倍数</div><div class="param-panel">
         ${[1.5,2,2.5,3].map(v=>`<div class="param-chip ${PARAMS.vol_mult===v?'active':''}" onclick="setP('vol_mult',${v})">${v}x</div>`).join('')}
       </div></div>
-      <div class="param-section" style="padding:10px;background:#fbbf2408;border:1px solid #fbbf2425;border-radius:8px;margin-top:8px">
-        <div class="param-label" style="color:var(--yl)">📊 区间交易 (网格)</div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">
-          <div><div style="font-size:9px;color:var(--dm);margin-bottom:2px">买入价 (触及即买)</div>
-            <input type="number" id="rng-buy" value="${PARAMS.range_buy}" style="width:90px" onchange="setP('range_buy',+this.value)"></div>
-          <div style="font-size:16px;color:var(--dm)">→</div>
-          <div><div style="font-size:9px;color:var(--dm);margin-bottom:2px">卖出价 (触及即卖)</div>
-            <input type="number" id="rng-sell" value="${PARAMS.range_sell}" style="width:90px" onchange="setP('range_sell',+this.value)"></div>
-          <div style="font-size:11px;color:var(--yl)">利润 <b class="mono">${((PARAMS.range_sell-PARAMS.range_buy)/PARAMS.range_buy*100).toFixed(1)}%</b>/次</div>
-        </div>
-        <div style="font-size:9px;color:var(--dm);margin-top:6px;line-height:1.5">
-          · 当日最低 ≤ 买入价 → 以买入价限价单成交<br>
-          · 持有直到某日最高 ≥ 卖出价 → 以卖出价限价单卖出<br>
-          · 不限持有天数，完全按价格进出
-        </div>
-      </div>
     </div>
   </div>
 
@@ -896,170 +924,53 @@ function go(data,live){
         <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
       </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
-  <!-- ====== RANGE TRADING SIMULATION ====== -->
+  <!-- ====== DYNAMIC RANGE TRADING ====== -->
   ${(()=>{
-    const RB=PARAMS.range_buy,RS=PARAMS.range_sell;
-    if(!RB||!RS||RS<=RB)return'';
-    const profitPct=((RS-RB)/RB*100);
-    // Simulate: buy at RB when low touches, hold until high touches RS
-    const trades=[];
-    let holding=false,entryDate='',entryIdx=0;
-    for(let i=0;i<data.length;i++){
-      if(!holding&&data[i].l<=RB){
-        holding=true;entryDate=data[i].d;entryIdx=i;
-      }else if(holding&&data[i].h>=RS){
-        const days=i-entryIdx;
-        trades.push({bd:entryDate,sd:data[i].d,days,bp:RB,sp:RS,ret:profitPct});
-        holding=false;
-      }
-    }
-    const holdingNow=holding;const holdDays=holding?data.length-1-entryIdx:0;
-    const curPnl=holding?((data[data.length-1].c-RB)/RB*100):0;
-    // Stats
-    const totalRounds=trades.length;
-    const totalProfit=totalRounds*profitPct;
-    const avgDays=totalRounds?trades.reduce((s,t)=>s+t.days,0)/totalRounds:0;
-    // Equity curve
-    let eq=10000;
-    const eqPts=trades.map(t=>{eq*=(1+profitPct/100);return{d:t.sd,eq};});
-    // Annualized (rough)
-    const totalDays=data.length;
-    const annualized=totalDays>30?totalProfit/(totalDays/252):0;
-
-    return`
-  <div class="card" style="border-color:var(--yl)">
-    <div class="card-t">📊 区间交易回测 <span style="font-size:11px;color:var(--dm);font-weight:400">买入$${RB} → 卖出$${RS} · 每次利润 ${profitPct.toFixed(1)}%</span></div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
-      <div class="ibox" style="flex:1;min-width:100px"><div class="l">完成轮次</div><div class="v" style="color:var(--yl)">${totalRounds}</div></div>
-      <div class="ibox" style="flex:1;min-width:100px"><div class="l">累计报酬</div><div class="v" style="color:${totalProfit>=0?'var(--gn)':'var(--rd)'}">+${totalProfit.toFixed(1)}%</div></div>
-      <div class="ibox" style="flex:1;min-width:100px"><div class="l">平均持有</div><div class="v" style="font-size:16px">${avgDays.toFixed(1)}天</div></div>
-      <div class="ibox" style="flex:1;min-width:100px"><div class="l">$10K终值</div><div class="v" style="font-size:16px;color:var(--gn)">$${(10000*Math.pow(1+profitPct/100,totalRounds)).toFixed(0)}</div></div>
-      <div class="ibox" style="flex:1;min-width:100px"><div class="l">年化(估)</div><div class="v" style="font-size:16px;color:var(--yl)">${annualized.toFixed(0)}%</div></div>
-    </div>
-    ${holdingNow?`<div style="font-size:11px;padding:6px 8px;background:#fbbf2410;border-radius:6px;margin-bottom:8px;color:var(--yl)">⏳ 当前持仓中 · 买入于 ${entryDate} @$${RB} · 已持有 ${holdDays} 天 · 浮盈 <b class="mono" style="color:${curPnl>=0?'var(--gn)':'var(--rd)'}">${curPnl>=0?'+':''}${curPnl.toFixed(1)}%</b> · 等待 $${RS} 卖出</div>`:''}
-    ${trades.length?`<div style="font-size:10px;color:var(--dm);margin-bottom:4px">交易记录 (${totalRounds}轮)</div>
-    <div class="trade-list"><table style="width:100%"><thead><tr><th>买入日</th><th>卖出日</th><th>持有</th><th>利润</th></tr></thead><tbody>
-      ${trades.map(t=>`<tr><td class="mono">${t.bd.slice(5)}</td><td class="mono">${t.sd.slice(5)}</td><td class="mono">${t.days}天</td><td class="mono" style="color:var(--gn)">+${t.ret.toFixed(1)}%</td></tr>`).join('')}
-    </tbody></table></div>`:'<div style="font-size:11px;color:var(--dm)">历史数据中无完成的交易轮次 — 价格未触及买入区间$${RB}或未回到卖出区间$${RS}</div>'}
-    <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      逻辑: 日低 ≤ $${RB} → 限价买入 → 持有至某日日高 ≥ $${RS} → 限价卖出 → 等待下一轮<br>
-      风险: 买入后若持续下跌可能长期套牢 · 当前价离买入价 ${((data[data.length-1].c-RB)/RB*100).toFixed(1)}% · 离卖出价 ${((RS-data[data.length-1].c)/data[data.length-1].c*100).toFixed(1)}%
-    </div>
-  </div>`;
-  })()}
-
-  <!-- ====== OPTIMAL RANGE FINDER ====== -->
-  ${(()=>{
-    const n=data.length-1,curP=data[n].c;
-    // Calculate key technical levels
-    const ma5=I.m5[n],ma10=I.m10[n],ma20=I.m20[n],ma30=I.m30[n];
-    const bollU=I.b10[n].u,bollL=I.b10[n].l,bollM=I.b10[n].m;
-    // Recent swing high/low (last 10 days)
-    const recent10=data.slice(-10);
-    const swingH=Math.max(...recent10.map(x=>x.h));
-    const swingL=Math.min(...recent10.map(x=>x.l));
-    // ATR for volatility gauge
-    let atrSum=0;for(let i=Math.max(1,n-13);i<=n;i++)atrSum+=Math.max(data[i].h-data[i].l,Math.abs(data[i].h-data[i-1].c),Math.abs(data[i].l-data[i-1].c));
-    const atr=atrSum/Math.min(14,n);
-    const atrPct=(atr/curP*100);
-
-    // Generate candidate buy levels: around support zones
-    const round=v=>Math.round(v/5)*5; // round to nearest 5
-    const buyLevels=new Set();
-    [ma5,ma10,ma20,ma30,bollL,bollM,swingL,curP-atr,curP-atr*1.5,curP-atr*0.5].forEach(v=>{
-      if(v&&v>0&&v<curP*1.15){buyLevels.add(round(v));buyLevels.add(round(v*0.98));buyLevels.add(round(v*1.02));}
-    });
-    // Add round numbers near price
-    for(let r=Math.floor(curP*0.85/50)*50;r<=curP*1.02;r+=50)buyLevels.add(r);
-
-    // Generate candidate sell levels: above buy
-    const sellOffsets=[0.03,0.05,0.08,0.10,0.12,0.15]; // 3% to 15% above buy
-
-    // Simulate each combo
-    function simRange(bp,sp){
-      if(sp<=bp||bp<=0)return null;
-      let rounds=0,totalDays=0,holding=false,entryIdx=0;
-      for(let i=0;i<data.length;i++){
-        if(!holding&&data[i].l<=bp){holding=true;entryIdx=i;}
-        else if(holding&&data[i].h>=sp){rounds++;totalDays+=(i-entryIdx);holding=false;}
-      }
-      if(!rounds)return null;
-      const profitPer=(sp-bp)/bp*100;
-      const avgDays=totalDays/rounds;
-      const totalRet=Math.pow(1+profitPer/100,rounds);
-      const dailyEff=profitPer/Math.max(avgDays,1); // % per day held
-      return{bp,sp,rounds,avgDays,profitPer,totalRet,dailyEff,holding};
-    }
-
-    const results=[];
-    buyLevels.forEach(bp=>{
-      sellOffsets.forEach(off=>{
-        const sp=round(bp*(1+off));
-        const r=simRange(bp,sp);
-        if(r&&r.rounds>=1)results.push(r);
-      });
-      // Also try sell at round numbers above
-      for(let sp=round(bp*1.02);sp<=bp*1.2;sp+=25){
-        const r=simRange(bp,sp);
-        if(r&&r.rounds>=1)results.push(r);
-      }
-    });
-
-    // Deduplicate and sort by daily efficiency
-    const seen=new Set();
-    const unique=results.filter(r=>{const k=r.bp+'-'+r.sp;if(seen.has(k))return false;seen.add(k);return true;});
-    unique.sort((a,b)=>b.dailyEff-a.dailyEff);
-    const top=unique.slice(0,8);
-
-    // Also find "most trades" and "highest total return"
-    const byTrades=[...unique].sort((a,b)=>b.rounds-a.rounds)[0];
-    const byReturn=[...unique].sort((a,b)=>b.totalRet-a.totalRet)[0];
-
-    // Technical reference levels
-    const refLevels=[
-      {n:'MA5',v:ma5,c:'var(--yl)'},{n:'MA10',v:ma10,c:'var(--ac)'},{n:'MA20',v:ma20,c:'var(--pu)'},
-      {n:'BOLL↓',v:bollL,c:'var(--gn)'},{n:'BOLL中',v:bollM,c:'var(--dm)'},{n:'BOLL↑',v:bollU,c:'var(--rd)'},
-      {n:'10日低',v:swingL,c:'var(--cy)'},{n:'10日高',v:swingH,c:'var(--or)'},
-      {n:'ATR',v:atr,c:'var(--dm)'},
-    ].filter(x=>x.v);
+    const dr=window._dynResults;
+    if(!dr||!dr.length)return'';
+    const best=dr[0];
+    const curP=data[data.length-1].c;
 
     return`
   <div class="card" style="border-color:var(--cy)">
-    <div class="card-t">🎯 最佳区间搜索 <span style="font-size:10px;color:var(--dm);font-weight:400">扫描${results.length}种买卖组合 · 按日效率排名</span></div>
-
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-      ${refLevels.map(r=>`<div style="font-size:10px;padding:3px 8px;background:var(--c2);border-radius:4px"><span style="color:${r.c}">${r.n}</span> <b class="mono">${r.v.toFixed(0)}</b></div>`).join('')}
-      <div style="font-size:10px;padding:3px 8px;background:var(--c2);border-radius:4px"><span style="color:var(--dm)">日振幅</span> <b class="mono">${atrPct.toFixed(1)}%</b></div>
-    </div>
+    <div class="card-t">📊 动态区间交易 <span style="font-size:10px;color:var(--dm);font-weight:400">买卖价每天跟着技术指标自动变动</span></div>
 
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>排名</th><th>买入</th><th>卖出</th><th>利润/次</th><th>完成轮</th><th>均持有</th><th>日效率</th><th>$10K终值</th><th></th></tr></thead>
+      <thead><tr><th>排名</th><th>策略</th><th>今日买入</th><th>今日卖出</th><th>价差</th><th>完成轮</th><th>均持有</th><th>日效率</th><th>$10K终值</th><th>状态</th></tr></thead>
       <tbody>
-        ${top.map((r,i)=>{
-          const isBest=i===0;
-          const isActive=r.bp===PARAMS.range_buy&&r.sp===PARAMS.range_sell;
-          return`<tr style="${isBest?'background:#67e8f908':''};${isActive?'border-left:2px solid var(--yl)':''}">
-            <td style="color:var(--dm);font-weight:700">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
-            <td class="mono" style="color:var(--gn);font-weight:700">${r.bp}</td>
-            <td class="mono" style="color:var(--rd);font-weight:700">${r.sp}</td>
-            <td class="mono">${r.profitPer.toFixed(1)}%</td>
-            <td class="mono">${r.rounds}次</td>
-            <td class="mono">${r.avgDays.toFixed(1)}天</td>
-            <td class="mono" style="color:var(--cy);font-weight:700">${r.dailyEff.toFixed(2)}%</td>
-            <td class="mono" style="color:var(--gn)">$${(10000*r.totalRet).toFixed(0)}</td>
-            <td><button class="btn ${isActive?'bp':'bg'}" style="padding:3px 8px;font-size:10px" onclick="setP('range_buy',${r.bp});document.getElementById('rng-buy').value=${r.bp};setP('range_sell',${r.sp});document.getElementById('rng-sell').value=${r.sp}">${isActive?'✓ 当前':'套用'}</button></td>
-          </tr>`;}).join('')}
+        ${dr.map((r,i)=>`<tr style="${i===0?'background:#67e8f908':''}">
+          <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
+          <td><b style="font-size:11px">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
+          <td class="mono" style="color:var(--gn);font-weight:700">${r.curBuy?.toFixed(0)||'—'}</td>
+          <td class="mono" style="color:var(--rd);font-weight:700">${r.curSell?.toFixed(0)||'—'}</td>
+          <td class="mono">${r.curBuy&&r.curSell?((r.curSell-r.curBuy)/r.curBuy*100).toFixed(1)+'%':'—'}</td>
+          <td class="mono">${r.rounds}次</td>
+          <td class="mono">${r.avgDays.toFixed(1)}天</td>
+          <td class="mono" style="color:var(--cy);font-weight:700">${r.dailyEff.toFixed(2)}%</td>
+          <td class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</td>
+          <td style="font-size:10px">${r.holdingNow?'<b style="color:var(--yl)">持仓'+r.holdDays+'天 '+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
+        </tr>`).join('')}
       </tbody>
     </table></div>
 
+    ${best.rounds?`
+    <div style="margin-top:10px;padding:10px;background:var(--c2);border-radius:8px;border-left:3px solid var(--cy)">
+      <div style="font-size:12px;font-weight:700;color:var(--cy);margin-bottom:6px">🥇 ${best.name} · 交易明细 (${best.rounds}轮)</div>
+      <div class="trade-list"><table style="width:100%"><thead><tr><th>买入日</th><th>买入价</th><th>卖出日</th><th>卖出价</th><th>持有</th><th>利润</th></tr></thead><tbody>
+        ${best.trades.slice(-12).reverse().map(t=>`<tr>
+          <td class="mono">${t.bd.slice(5)}</td><td class="mono" style="color:var(--gn)">${t.bp.toFixed(0)}</td>
+          <td class="mono">${t.sd.slice(5)}</td><td class="mono" style="color:var(--rd)">${t.sp.toFixed(0)}</td>
+          <td class="mono">${t.days}天</td><td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
+
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;line-height:1.6">
-      <b>怎么选区间？</b><br>
-      · <b style="color:var(--cy)">日效率</b> = 每次利润% ÷ 平均持有天数 — 值越高代表资金利用越高效<br>
-      · <b>买入价</b>参考: MA均线(动态支撑) / BOLL下轨(波动下沿) / 近期波段低点<br>
-      · <b>卖出价</b>参考: BOLL上轨 / 整数关口 / 近期波段高点<br>
-      · <b>价差太小</b>(<3%): 手续费吃掉利润 · <b>价差太大</b>(>15%): 等太久触发不了<br>
-      · 日振幅 ${atrPct.toFixed(1)}% 意味着正常一天波动约 $${atr.toFixed(0)}，区间应≥1.5x ATR才有足够空间<br>
-      · 🥇排名第一不代表未来最优 — 市场结构会变，高位区间不适用于回调行情
+      <b>动态 vs 固定区间</b>: 这里每个策略的买卖价格<b>每天都不同</b>，跟着指标走<br>
+      · <b>BOLL区间</b>: 买卖价=布林带上下轨，波动大时区间宽、波动小时区间窄<br>
+      · <b>MA通道</b>: 买卖价=均线±固定%，价格从600涨到1000，区间自动跟着上移<br>
+      · <b>MA±ATR</b>: 买卖价=均线±日振幅，波动大区间自动加宽，避免频繁止损<br>
+      · <b style="color:var(--cy)">日效率</b> = 平均每笔利润% ÷ 平均持有天数 — 值越高=资金周转越快
     </div>
   </div>`;
   })()}
