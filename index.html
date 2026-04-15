@@ -100,7 +100,7 @@ function setStock(code){
   STOCK_EAST='116.'+code.padStart(5,'0');
   localStorage.setItem('stk_code',code);
   document.title=STOCK_HK+' 技术监控';
-  ID=[];lastIntradayFetch=null;
+  ID=[];lastIntradayFetch=null;window._hfRendered=false;
   document.getElementById('app').innerHTML='<div class="loading"><div class="sp"></div><div style="margin-top:12px">切换至 '+STOCK_HK+'...</div></div>';
   init();
 }
@@ -513,28 +513,93 @@ function stBt(d,I){
       b:i=>i>0&&r14[i]<35&&lowerShadow(i)>range(i)*0.5&&isGreen(i),s:()=>false},
   ];
 
-  // === Dynamic range strategies (buy/sell levels recalculated daily) ===
-  // ATR for volatility scaling
+  // === Dynamic range strategies (daily) ===
   const atr14=[];{let a=0;for(let i=0;i<d.length;i++){
     const tr=i===0?d[0].h-d[0].l:Math.max(d[i].h-d[i].l,Math.abs(d[i].h-d[i-1].c),Math.abs(d[i].l-d[i-1].c));
     if(i<14){a+=tr/14;atr14.push(a);}else{a=(a*13+tr)/14;atr14.push(a);}}}
 
   const dynRanges=[
-    {name:'BOLL(10,1.5)区间',desc:'下轨买·上轨卖',
+    {name:'BOLL(10,1.5)区间',desc:'下轨买·上轨卖',tf:'日线',
       buyAt:i=>b10[i].l,sellAt:i=>b10[i].u},
-    {name:'BOLL(20,2)区间',desc:'下轨买·上轨卖',
+    {name:'BOLL(20,2)区间',desc:'下轨买·上轨卖',tf:'日线',
       buyAt:i=>I.b20[i].l,sellAt:i=>I.b20[i].u},
-    {name:'MA10±3%通道',desc:'MA10下3%买·上3%卖',
+    {name:'MA10±3%通道',desc:'MA10下3%买·上3%卖',tf:'日线',
       buyAt:i=>m10[i]?m10[i]*0.97:null,sellAt:i=>m10[i]?m10[i]*1.03:null},
-    {name:'MA20±ATR通道',desc:'MA20-ATR买·+ATR卖',
+    {name:'MA20±ATR通道',desc:'MA20-ATR买·+ATR卖',tf:'日线',
       buyAt:i=>m20[i]?m20[i]-atr14[i]:null,sellAt:i=>m20[i]?m20[i]+atr14[i]:null},
-    {name:'MA5均值回归±5%',desc:'MA5下5%买·上5%卖',
+    {name:'MA5均值回归±5%',desc:'MA5下5%买·上5%卖',tf:'日线',
       buyAt:i=>m5[i]?m5[i]*0.95:null,sellAt:i=>m5[i]?m5[i]*1.05:null},
-    {name:'MA10±ATR×0.8',desc:'窄通道·快进快出',
+    {name:'MA10±ATR×0.8',desc:'窄通道·快进快出',tf:'日线',
       buyAt:i=>m10[i]?m10[i]-atr14[i]*0.8:null,sellAt:i=>m10[i]?m10[i]+atr14[i]*0.8:null},
   ];
 
-  // Simulate each dynamic range
+  // === 5-min intraday high-frequency strategies ===
+  let hfResults=[];
+  if(ID.length>30){
+    const id=ID;
+    // 5-min indicators
+    const p20=20,p60=60;
+    const idMA20=id.map((_,i)=>i<p20-1?null:id.slice(i-p20+1,i+1).reduce((s,x)=>s+x.c,0)/p20);
+    const idMA60=id.map((_,i)=>i<p60-1?null:id.slice(i-p60+1,i+1).reduce((s,x)=>s+x.c,0)/p60);
+    // 5-min BOLL(20,2)
+    const idBoll=id.map((_,i)=>{if(i<p20-1)return{u:null,l:null,m:null};
+      const sl=id.slice(i-p20+1,i+1).map(x=>x.c),mn=idMA20[i];
+      const std=Math.sqrt(sl.reduce((a,v)=>a+(v-mn)**2,0)/p20);return{u:mn+2*std,m:mn,l:mn-2*std};});
+    // 5-min VWAP (reset per day)
+    let cumVP=0,cumV=0;
+    const idVwap=id.map((x,i)=>{if(i>0&&id[i].d!==id[i-1].d){cumVP=0;cumV=0;}
+      cumVP+=(x.h+x.l+x.c)/3*x.v;cumV+=x.v;return cumV?cumVP/cumV:x.c;});
+    // 5-min ATR
+    const idATR=[];{let a=0;for(let i=0;i<id.length;i++){
+      const tr=i===0?id[0].h-id[0].l:Math.max(id[i].h-id[i].l,Math.abs(id[i].h-id[i-1].c),Math.abs(id[i].l-id[i-1].c));
+      if(i<20){a+=tr/20;idATR.push(a);}else{a=(a*19+tr)/20;idATR.push(a);}}}
+
+    const hfStrategies=[
+      {name:'5分BOLL(20,2)',desc:'下轨买·上轨卖',
+        buyAt:i=>idBoll[i].l,sellAt:i=>idBoll[i].u},
+      {name:'5分VWAP±0.5%',desc:'VWAP下0.5%买·上0.5%卖',
+        buyAt:i=>idVwap[i]?idVwap[i]*0.995:null,sellAt:i=>idVwap[i]?idVwap[i]*1.005:null},
+      {name:'5分VWAP±1%',desc:'VWAP下1%买·上1%卖',
+        buyAt:i=>idVwap[i]?idVwap[i]*0.99:null,sellAt:i=>idVwap[i]?idVwap[i]*1.01:null},
+      {name:'5分MA20±ATR',desc:'MA20-ATR买·+ATR卖',
+        buyAt:i=>idMA20[i]?idMA20[i]-idATR[i]:null,sellAt:i=>idMA20[i]?idMA20[i]+idATR[i]:null},
+      {name:'5分MA60±1.5%',desc:'MA60下1.5%买·上1.5%卖',
+        buyAt:i=>idMA60[i]?idMA60[i]*0.985:null,sellAt:i=>idMA60[i]?idMA60[i]*1.015:null},
+      {name:'5分MA20±0.8%',desc:'窄通道极速交易',
+        buyAt:i=>idMA20[i]?idMA20[i]*0.992:null,sellAt:i=>idMA20[i]?idMA20[i]*1.008:null},
+    ];
+
+    hfResults=hfStrategies.map(hs=>{
+      const trades=[];let holding=false,entryP=0,entryIdx=0,entryTime='';
+      for(let i=1;i<id.length;i++){
+        const bl=hs.buyAt(i),sl=hs.sellAt(i);
+        if(!bl||!sl||sl<=bl)continue;
+        if(!holding&&id[i].l<=bl){holding=true;entryP=bl;entryIdx=i;entryTime=id[i].d+' '+id[i].tl;}
+        else if(holding){
+          const cs=hs.sellAt(i);
+          if(cs&&id[i].h>=cs){
+            const ret=(cs-entryP)/entryP*100;
+            const bars=i-entryIdx;
+            trades.push({bt:entryTime,st:id[i].d+' '+id[i].tl,bars,mins:bars*5,bp:entryP,sp:cs,ret});
+            holding=false;
+          }
+        }
+      }
+      const rounds=trades.length;
+      const avgMins=rounds?trades.reduce((s,t)=>s+t.mins,0)/rounds:0;
+      const avgRet=rounds?trades.reduce((s,t)=>s+t.ret,0)/rounds:0;
+      const eq=trades.reduce((e,t)=>e*(1+t.ret/100),10000);
+      const minEff=avgMins?avgRet/avgMins*60:0; // %/hour
+      const curBuy=hs.buyAt(id.length-1),curSell=hs.sellAt(id.length-1);
+      const holdingNow=holding;const holdMins=holding?(id.length-1-entryIdx)*5:0;
+      const curPnl=holding?((id[id.length-1].c-entryP)/entryP*100):0;
+      return{...hs,trades,rounds,avgMins,avgRet,eq,minEff,curBuy,curSell,holdingNow,holdMins,entryP,curPnl};
+    });
+    hfResults.sort((a,b)=>b.minEff-a.minEff);
+  }
+  window._hfResults=hfResults;
+
+  // Daily dynamic sim (unchanged logic)
   const dynResults=dynRanges.map(dr=>{
     const trades=[];let holding=false,entryP=0,entryIdx=0,entryDate='';
     for(let i=1;i<d.length;i++){
@@ -924,21 +989,56 @@ function go(data,live){
         <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
       </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
-  <!-- ====== DYNAMIC RANGE TRADING ====== -->
+  <!-- ====== HIGH-FREQUENCY TRADING REFERENCE ====== -->
   ${(()=>{
     const dr=window._dynResults;
-    if(!dr||!dr.length)return'';
-    const best=dr[0];
+    const hf=window._hfResults;
     const curP=data[data.length-1].c;
+    const has5m=hf&&hf.length>0;
 
     return`
   <div class="card" style="border-color:var(--cy)">
-    <div class="card-t">📊 动态区间交易 <span style="font-size:10px;color:var(--dm);font-weight:400">买卖价每天跟着技术指标自动变动</span></div>
+    <div class="card-t">⚡ 高频交易策略参考 <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?'5分钟线回测 · 实时数据':'日线回测 · 等待5分钟数据'}</span></div>
 
+    ${has5m?`
+    <div style="font-size:11px;font-weight:700;color:var(--cy);margin-bottom:6px">📈 5分钟级别 <span style="font-size:9px;color:var(--dm);font-weight:400">· ${ID.length}根K线 · ${lastIntradayFetch?lastIntradayFetch.toLocaleString('zh-CN',{hour12:false}):''}</span></div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>排名</th><th>策略</th><th>现价买入</th><th>现价卖出</th><th>价差</th><th>完成轮</th><th>均耗时</th><th>时效率</th><th>$10K</th><th>状态</th></tr></thead>
+      <tbody>
+        ${hf.map((r,i)=>`<tr style="${i===0?'background:#67e8f908':''}">
+          <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
+          <td><b style="font-size:11px">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
+          <td class="mono" style="color:var(--gn);font-weight:700">${r.curBuy?.toFixed(0)||'—'}</td>
+          <td class="mono" style="color:var(--rd);font-weight:700">${r.curSell?.toFixed(0)||'—'}</td>
+          <td class="mono">${r.curBuy&&r.curSell?((r.curSell-r.curBuy)/r.curBuy*100).toFixed(1)+'%':'—'}</td>
+          <td class="mono">${r.rounds}次</td>
+          <td class="mono">${r.avgMins<60?r.avgMins.toFixed(0)+'分':(r.avgMins/60).toFixed(1)+'时'}</td>
+          <td class="mono" style="color:var(--cy);font-weight:700">${r.minEff.toFixed(2)}%/h</td>
+          <td class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</td>
+          <td style="font-size:10px">${r.holdingNow?'<b style="color:var(--yl)">持仓'+r.holdMins+'分 '+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+
+    ${hf[0]&&hf[0].trades.length?`
+    <div style="margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;border-left:2px solid var(--cy)">
+      <div style="font-size:10px;color:var(--cy);font-weight:700;margin-bottom:4px">🥇 ${hf[0].name} 最近交易</div>
+      <div class="trade-list" style="max-height:140px"><table style="width:100%"><thead><tr><th>买入时间</th><th>买价</th><th>卖出时间</th><th>卖价</th><th>耗时</th><th>利润</th></tr></thead><tbody>
+        ${hf[0].trades.slice(-8).reverse().map(t=>`<tr>
+          <td class="mono" style="font-size:10px">${t.bt.slice(5)}</td><td class="mono" style="color:var(--gn)">${t.bp.toFixed(1)}</td>
+          <td class="mono" style="font-size:10px">${t.st.slice(5)}</td><td class="mono" style="color:var(--rd)">${t.sp.toFixed(1)}</td>
+          <td class="mono">${t.mins}分</td><td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}">${t.ret>=0?'+':''}${t.ret.toFixed(2)}%</td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
+    <div style="height:1px;background:var(--bd);margin:12px 0"></div>
+    `:''}
+
+    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">📊 日线级别动态区间</div>
     <div style="overflow-x:auto"><table>
       <thead><tr><th>排名</th><th>策略</th><th>今日买入</th><th>今日卖出</th><th>价差</th><th>完成轮</th><th>均持有</th><th>日效率</th><th>$10K终值</th><th>状态</th></tr></thead>
       <tbody>
-        ${dr.map((r,i)=>`<tr style="${i===0?'background:#67e8f908':''}">
+        ${(dr||[]).map((r,i)=>`<tr style="${i===0?'background:#fbbf2408':''}">
           <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
           <td><b style="font-size:11px">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
           <td class="mono" style="color:var(--gn);font-weight:700">${r.curBuy?.toFixed(0)||'—'}</td>
@@ -946,31 +1046,21 @@ function go(data,live){
           <td class="mono">${r.curBuy&&r.curSell?((r.curSell-r.curBuy)/r.curBuy*100).toFixed(1)+'%':'—'}</td>
           <td class="mono">${r.rounds}次</td>
           <td class="mono">${r.avgDays.toFixed(1)}天</td>
-          <td class="mono" style="color:var(--cy);font-weight:700">${r.dailyEff.toFixed(2)}%</td>
+          <td class="mono" style="color:var(--yl);font-weight:700">${r.dailyEff.toFixed(2)}%</td>
           <td class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</td>
           <td style="font-size:10px">${r.holdingNow?'<b style="color:var(--yl)">持仓'+r.holdDays+'天 '+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
 
-    ${best.rounds?`
-    <div style="margin-top:10px;padding:10px;background:var(--c2);border-radius:8px;border-left:3px solid var(--cy)">
-      <div style="font-size:12px;font-weight:700;color:var(--cy);margin-bottom:6px">🥇 ${best.name} · 交易明细 (${best.rounds}轮)</div>
-      <div class="trade-list"><table style="width:100%"><thead><tr><th>买入日</th><th>买入价</th><th>卖出日</th><th>卖出价</th><th>持有</th><th>利润</th></tr></thead><tbody>
-        ${best.trades.slice(-12).reverse().map(t=>`<tr>
-          <td class="mono">${t.bd.slice(5)}</td><td class="mono" style="color:var(--gn)">${t.bp.toFixed(0)}</td>
-          <td class="mono">${t.sd.slice(5)}</td><td class="mono" style="color:var(--rd)">${t.sp.toFixed(0)}</td>
-          <td class="mono">${t.days}天</td><td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
-        </tr>`).join('')}
-      </tbody></table></div>
-    </div>`:''}
-
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;line-height:1.6">
-      <b>动态 vs 固定区间</b>: 这里每个策略的买卖价格<b>每天都不同</b>，跟着指标走<br>
-      · <b>BOLL区间</b>: 买卖价=布林带上下轨，波动大时区间宽、波动小时区间窄<br>
-      · <b>MA通道</b>: 买卖价=均线±固定%，价格从600涨到1000，区间自动跟着上移<br>
-      · <b>MA±ATR</b>: 买卖价=均线±日振幅，波动大区间自动加宽，避免频繁止损<br>
-      · <b style="color:var(--cy)">日效率</b> = 平均每笔利润% ÷ 平均持有天数 — 值越高=资金周转越快
+      <b>高频策略说明</b><br>
+      · <b style="color:var(--cy)">5分钟策略</b>: 用盘中实时5分钟K线的BOLL/VWAP/MA计算买卖价，效率按 <b>%/小时</b> 排名<br>
+      · <b style="color:var(--yl)">日线策略</b>: 用每日收盘后指标计算次日买卖价，效率按 <b>%/天</b> 排名<br>
+      · <b>VWAP通道</b>: 成交量加权均价±偏移，反映当日主力成本，适合日内短差<br>
+      · <b>BOLL通道</b>: 波动率自适应，震荡市宽、趋势市窄<br>
+      · 今日若大幅回落，5分钟BOLL下轨会下移，买入价位跟着降 — 等企稳再触发<br>
+      · 所有买卖价随市场实时变动，5分钟自动刷新更新
     </div>
   </div>`;
   })()}
@@ -1088,7 +1178,12 @@ function go(data,live){
 
   setTimeout(()=>{drawChart(currentTF);drawEqChart();},80);
   // Fetch intraday data and news in background
-  (async()=>{const id=await fdIntraday();if(id){ID=id;if(currentTF==='5m')drawChart('5m');}})();
+  if(!window._hfRendered){
+    (async()=>{const id=await fdIntraday();if(id){ID=id;
+      if(currentTF==='5m')drawChart('5m');
+      window._hfRendered=true;go(data,live);
+    }})();
+  }
   fetchNews();
   startAutoRefresh();
 }
@@ -1128,6 +1223,7 @@ function drawEqChart(){
 function ap(){const c=parseFloat(document.getElementById('ic').value);if(!c)return alert('输入收盘价');const L=D[D.length-1];
   D.push({d:new Date().toISOString().slice(0,10),o:L.c,h:Math.max(parseFloat(document.getElementById('ih').value)||c,c,L.c),l:Math.min(parseFloat(document.getElementById('il').value)||c,c,L.c),c,v:parseFloat(document.getElementById('iv').value)||L.v});go(D,false);}
 async function rl(silent){
+  window._hfRendered=false;
   if(!silent)document.getElementById('app').innerHTML='<div class="loading"><div class="sp"></div><div style="margin-top:12px">获取 '+STOCK_HK+' 数据...</div></div>';
   const d=await fd();
   const cacheKey='zd_'+STOCK_CODE;
