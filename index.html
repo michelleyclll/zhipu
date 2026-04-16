@@ -533,69 +533,123 @@ function stBt(d,I){
       buyAt:i=>m10[i]?m10[i]-atr14[i]*0.8:null,sellAt:i=>m10[i]?m10[i]+atr14[i]*0.8:null},
   ];
 
-  // === 5-min intraday high-frequency strategies ===
+  // === 5-min TP/SL high-frequency strategies ===
+  // Core rule: enter at signal → TP +5% → SL -3% → whoever hits first
   let hfResults=[];
   if(ID.length>30){
     const id=ID;
-    // 5-min indicators
     const p20=20,p60=60;
     const idMA20=id.map((_,i)=>i<p20-1?null:id.slice(i-p20+1,i+1).reduce((s,x)=>s+x.c,0)/p20);
     const idMA60=id.map((_,i)=>i<p60-1?null:id.slice(i-p60+1,i+1).reduce((s,x)=>s+x.c,0)/p60);
-    // 5-min BOLL(20,2)
     const idBoll=id.map((_,i)=>{if(i<p20-1)return{u:null,l:null,m:null};
-      const sl=id.slice(i-p20+1,i+1).map(x=>x.c),mn=idMA20[i];
-      const std=Math.sqrt(sl.reduce((a,v)=>a+(v-mn)**2,0)/p20);return{u:mn+2*std,m:mn,l:mn-2*std};});
-    // 5-min VWAP (reset per day)
+      const sl2=id.slice(i-p20+1,i+1).map(x=>x.c),mn=idMA20[i];
+      const std=Math.sqrt(sl2.reduce((a,v)=>a+(v-mn)**2,0)/p20);return{u:mn+2*std,m:mn,l:mn-2*std};});
     let cumVP=0,cumV=0;
     const idVwap=id.map((x,i)=>{if(i>0&&id[i].d!==id[i-1].d){cumVP=0;cumV=0;}
       cumVP+=(x.h+x.l+x.c)/3*x.v;cumV+=x.v;return cumV?cumVP/cumV:x.c;});
-    // 5-min ATR
-    const idATR=[];{let a=0;for(let i=0;i<id.length;i++){
-      const tr=i===0?id[0].h-id[0].l:Math.max(id[i].h-id[i].l,Math.abs(id[i].h-id[i-1].c),Math.abs(id[i].l-id[i-1].c));
-      if(i<20){a+=tr/20;idATR.push(a);}else{a=(a*19+tr)/20;idATR.push(a);}}}
+    // 5-min RSI
+    const idRSI=[];{let ag2=0,al2=0;for(let i=0;i<id.length;i++){
+      if(!i){idRSI.push(50);continue;}const ch2=id[i].c-id[i-1].c,g2=ch2>0?ch2:0,l2=ch2<0?-ch2:0;
+      if(i<=14){ag2+=g2/14;al2+=l2/14;if(i<14){idRSI.push(50);continue;}}else{ag2=(ag2*13+g2)/14;al2=(al2*13+l2)/14;}
+      idRSI.push(al2===0?100:100-100/(1+ag2/al2));}}
 
-    const hfStrategies=[
-      {name:'5分BOLL(20,2)',desc:'下轨买·上轨卖',
-        buyAt:i=>idBoll[i].l,sellAt:i=>idBoll[i].u},
-      {name:'5分VWAP±0.5%',desc:'VWAP下0.5%买·上0.5%卖',
-        buyAt:i=>idVwap[i]?idVwap[i]*0.995:null,sellAt:i=>idVwap[i]?idVwap[i]*1.005:null},
-      {name:'5分VWAP±1%',desc:'VWAP下1%买·上1%卖',
-        buyAt:i=>idVwap[i]?idVwap[i]*0.99:null,sellAt:i=>idVwap[i]?idVwap[i]*1.01:null},
-      {name:'5分MA20±ATR',desc:'MA20-ATR买·+ATR卖',
-        buyAt:i=>idMA20[i]?idMA20[i]-idATR[i]:null,sellAt:i=>idMA20[i]?idMA20[i]+idATR[i]:null},
-      {name:'5分MA60±1.5%',desc:'MA60下1.5%买·上1.5%卖',
-        buyAt:i=>idMA60[i]?idMA60[i]*0.985:null,sellAt:i=>idMA60[i]?idMA60[i]*1.015:null},
-      {name:'5分MA20±0.8%',desc:'窄通道极速交易',
-        buyAt:i=>idMA20[i]?idMA20[i]*0.992:null,sellAt:i=>idMA20[i]?idMA20[i]*1.008:null},
+    const TP=0.05, SL=0.03; // 5% take profit, 3% stop loss
+
+    // Entry signal definitions (when to buy)
+    const entrySignals=[
+      {name:'BOLL下轨触及',desc:'价格跌到布林下轨',c:'var(--gn)',
+        fire:i=>idBoll[i].l&&id[i].l<=idBoll[i].l,entryP:i=>idBoll[i].l},
+      {name:'VWAP下穿回升',desc:'跌破VWAP后反弹',c:'var(--cy)',
+        fire:i=>i>0&&idVwap[i]&&id[i-1].c<idVwap[i-1]&&id[i].c>idVwap[i],entryP:i=>id[i].c},
+      {name:'BOLL中轨支撑',desc:'回踩布林中轨反弹',c:'var(--ac)',
+        fire:i=>i>0&&idBoll[i].m&&id[i].l<=idBoll[i].m*1.002&&id[i].c>idBoll[i].m&&id[i].c>id[i].o,entryP:i=>idBoll[i].m},
+      {name:'MA20反弹',desc:'跌到MA20后阳线',c:'var(--yl)',
+        fire:i=>i>0&&idMA20[i]&&id[i].l<=idMA20[i]*1.002&&id[i].c>id[i].o,entryP:i=>idMA20[i]},
+      {name:'MA60支撑',desc:'跌到MA60后阳线',c:'var(--pu)',
+        fire:i=>i>0&&idMA60[i]&&id[i].l<=idMA60[i]*1.003&&id[i].c>id[i].o,entryP:i=>idMA60[i]},
+      {name:'RSI<30超卖',desc:'5分RSI跌破30',c:'var(--gn)',
+        fire:i=>i>0&&idRSI[i]<30&&idRSI[i-1]>=30,entryP:i=>id[i].c},
+      {name:'RSI<40+BOLL下半',desc:'RSI偏低+价格在BOLL下半区',c:'var(--ac)',
+        fire:i=>idRSI[i]<40&&idBoll[i].m&&id[i].c<idBoll[i].m,entryP:i=>id[i].c},
+      {name:'放量急跌反弹',desc:'5分量>3x均量+下影线>实体',c:'var(--or)',
+        fire:i=>{if(i<20)return false;const av=id.slice(i-20,i).reduce((s,x)=>s+x.v,0)/20;
+          const body2=Math.abs(id[i].c-id[i].o)||0.01;const ls=Math.min(id[i].o,id[i].c)-id[i].l;
+          return id[i].v>av*3&&ls>body2&&id[i].c>id[i].o;},entryP:i=>id[i].c},
+      {name:'3根连跌后阳线',desc:'连续3根5分钟跌后反转',c:'var(--rd)',
+        fire:i=>i>3&&id[i-3].c<id[i-3].o&&id[i-2].c<id[i-2].o&&id[i-1].c<id[i-1].o&&id[i].c>id[i].o&&(id[i].c-id[i].o)>(id[i-1].o-id[i-1].c)*0.8,entryP:i=>id[i].c},
+      {name:'VWAP+RSI<45组合',desc:'低于VWAP且RSI偏弱',c:'var(--cy)',
+        fire:i=>idVwap[i]&&id[i].c<idVwap[i]*0.995&&idRSI[i]<45&&id[i].c>id[i].o,entryP:i=>id[i].c},
     ];
 
-    hfResults=hfStrategies.map(hs=>{
-      const trades=[];let holding=false,entryP=0,entryIdx=0,entryTime='';
+    // Reusable simulation: given entry signals + TP/SL, return stats
+    function simSignal(es,TPx,SLx){
+      const trades=[];let holding=false,entryP2=0,entryIdx2=0,entryTime='';
       for(let i=1;i<id.length;i++){
-        const bl=hs.buyAt(i),sl=hs.sellAt(i);
-        if(!bl||!sl||sl<=bl)continue;
-        if(!holding&&id[i].l<=bl){holding=true;entryP=bl;entryIdx=i;entryTime=id[i].d+' '+id[i].tl;}
-        else if(holding){
-          const cs=hs.sellAt(i);
-          if(cs&&id[i].h>=cs){
-            const ret=(cs-entryP)/entryP*100;
-            const bars=i-entryIdx;
-            trades.push({bt:entryTime,st:id[i].d+' '+id[i].tl,bars,mins:bars*5,bp:entryP,sp:cs,ret});
+        if(!holding&&es.fire(i)){
+          const ep=es.entryP(i);if(!ep)continue;
+          holding=true;entryP2=ep;entryIdx2=i;entryTime=id[i].d+' '+id[i].tl;
+        }else if(holding){
+          const tpPrice=entryP2*(1+TPx);
+          const slPrice=entryP2*(1-SLx);
+          let exitP=null,exitType='';
+          if(id[i].h>=tpPrice){exitP=tpPrice;exitType='✅TP';}
+          else if(id[i].l<=slPrice){exitP=slPrice;exitType='❌SL';}
+          if(exitP){
+            const ret=(exitP-entryP2)/entryP2*100;
+            const bars=i-entryIdx2;
+            trades.push({bt:entryTime,st:id[i].d+' '+id[i].tl,bars,mins:bars*5,bp:entryP2,sp:exitP,ret,exitType,win:ret>0});
             holding=false;
           }
         }
       }
-      const rounds=trades.length;
+      const rounds=trades.length,wins=trades.filter(t=>t.win).length;
+      const wr=rounds?wins/rounds:0;
       const avgMins=rounds?trades.reduce((s,t)=>s+t.mins,0)/rounds:0;
-      const avgRet=rounds?trades.reduce((s,t)=>s+t.ret,0)/rounds:0;
       const eq=trades.reduce((e,t)=>e*(1+t.ret/100),10000);
-      const minEff=avgMins?avgRet/avgMins*60:0; // %/hour
-      const curBuy=hs.buyAt(id.length-1),curSell=hs.sellAt(id.length-1);
-      const holdingNow=holding;const holdMins=holding?(id.length-1-entryIdx)*5:0;
-      const curPnl=holding?((id[id.length-1].c-entryP)/entryP*100):0;
-      return{...hs,trades,rounds,avgMins,avgRet,eq,minEff,curBuy,curSell,holdingNow,holdMins,entryP,curPnl};
+      const expectancy=wr*TPx*100-(1-wr)*SLx*100;
+      return{trades,rounds,wins,wr,avgMins,eq,expectancy,holding,entryP2,entryIdx2};
+    }
+
+    // 1) Default TP5%/SL3% comparison of all entry signals
+    hfResults=entrySignals.map(es=>{
+      const r=simSignal(es,TP,SL);
+      const curBuy=es.entryP(id.length-1);
+      const holdMins=r.holding?(id.length-1-r.entryIdx2)*5:0;
+      const curPnl=r.holding?((id[id.length-1].c-r.entryP2)/r.entryP2*100):0;
+      const tpNow=r.holding?r.entryP2*(1+TP):null;const slNow=r.holding?r.entryP2*(1-SL):null;
+      return{...es,...r,curBuy,holdingNow:r.holding,holdMins,entryP:r.entryP2,curPnl,tpNow,slNow};
     });
-    hfResults.sort((a,b)=>b.minEff-a.minEff);
+    hfResults.sort((a,b)=>b.expectancy-a.expectancy);
+
+    // 2) TP/SL sweep: test all combos for each signal, find optimal
+    const tpLevels=[3,4,5,6,7,8,10]; // %
+    const slLevels=[2,3,4,5,6,8];    // %
+    const sweepResults=[];
+    entrySignals.forEach(es=>{
+      tpLevels.forEach(tp=>{
+        slLevels.forEach(sl=>{
+          const r=simSignal(es,tp/100,sl/100);
+          if(r.rounds<2)return; // need at least 2 trades for meaning
+          sweepResults.push({
+            signal:es.name,signalColor:es.c,tp,sl,
+            ratio:(tp/sl).toFixed(2),
+            rounds:r.rounds,wr:r.wr,wins:r.wins,losses:r.rounds-r.wins,
+            expectancy:r.expectancy,eq:r.eq,avgMins:r.avgMins,
+          });
+        });
+      });
+    });
+    // Sort by expectancy (primary), then by rounds (secondary) for tiebreak
+    sweepResults.sort((a,b)=>b.expectancy-a.expectancy||b.rounds-a.rounds);
+    window._sweepResults=sweepResults;
+    // Also find best per signal
+    const bestPerSignal={};
+    sweepResults.forEach(r=>{
+      if(!bestPerSignal[r.signal]||r.expectancy>bestPerSignal[r.signal].expectancy){
+        bestPerSignal[r.signal]=r;
+      }
+    });
+    window._bestPerSignal=bestPerSignal;
   }
   window._hfResults=hfResults;
 
@@ -998,41 +1052,96 @@ function go(data,live){
 
     return`
   <div class="card" style="border-color:var(--cy)">
-    <div class="card-t">⚡ 高频交易策略参考 <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?'5分钟线回测 · 实时数据':'日线回测 · 等待5分钟数据'}</span></div>
+    <div class="card-t">⚡ 高频 TP5%/SL3% <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?'5分钟线回测 · 止盈5% · 止损3%':'等待5分钟数据'}</span></div>
 
     ${has5m?`
-    <div style="font-size:11px;font-weight:700;color:var(--cy);margin-bottom:6px">📈 5分钟级别 <span style="font-size:9px;color:var(--dm);font-weight:400">· ${ID.length}根K线 · ${lastIntradayFetch?lastIntradayFetch.toLocaleString('zh-CN',{hour12:false}):''}</span></div>
+    <div style="font-size:11px;font-weight:700;color:var(--cy);margin-bottom:6px">📈 5分钟 TP5%/SL3% <span style="font-size:9px;color:var(--dm);font-weight:400">· ${ID.length}根K线 · ${lastIntradayFetch?lastIntradayFetch.toLocaleString('zh-CN',{hour12:false}):''} · 10种入场信号比较</span></div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>排名</th><th>策略</th><th>现价买入</th><th>现价卖出</th><th>价差</th><th>完成轮</th><th>均耗时</th><th>时效率</th><th>$10K</th><th>状态</th></tr></thead>
+      <thead><tr><th>排名</th><th>入场信号</th><th>交易</th><th style="color:var(--gn)">✅TP</th><th style="color:var(--rd)">❌SL</th><th>胜率</th><th>期望值</th><th>均耗时</th><th>$10K</th><th>状态</th></tr></thead>
       <tbody>
         ${hf.map((r,i)=>`<tr style="${i===0?'background:#67e8f908':''}">
           <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
-          <td><b style="font-size:11px">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
-          <td class="mono" style="color:var(--gn);font-weight:700">${r.curBuy?.toFixed(0)||'—'}</td>
-          <td class="mono" style="color:var(--rd);font-weight:700">${r.curSell?.toFixed(0)||'—'}</td>
-          <td class="mono">${r.curBuy&&r.curSell?((r.curSell-r.curBuy)/r.curBuy*100).toFixed(1)+'%':'—'}</td>
-          <td class="mono">${r.rounds}次</td>
+          <td><b style="font-size:11px;color:${r.c}">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
+          <td class="mono">${r.rounds}笔</td>
+          <td class="mono" style="color:var(--gn)">${r.wins}</td>
+          <td class="mono" style="color:var(--rd)">${r.rounds-r.wins}</td>
+          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
+          <td class="mono" style="font-weight:700;color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
           <td class="mono">${r.avgMins<60?r.avgMins.toFixed(0)+'分':(r.avgMins/60).toFixed(1)+'时'}</td>
-          <td class="mono" style="color:var(--cy);font-weight:700">${r.minEff.toFixed(2)}%/h</td>
-          <td class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</td>
-          <td style="font-size:10px">${r.holdingNow?'<b style="color:var(--yl)">持仓'+r.holdMins+'分 '+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
+          <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
+          <td style="font-size:9px">${r.holdingNow?'<b style="color:var(--yl)">持仓 '+(r.holdMins<60?r.holdMins+'分':(r.holdMins/60).toFixed(1)+'h')+'<br>'+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%<br>TP:'+r.tpNow?.toFixed(0)+' SL:'+r.slNow?.toFixed(0)+'</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${hf[0]&&hf[0].trades.length?`
+    <div style="margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;border-left:2px solid var(--cy)">
+      <div style="font-size:10px;color:var(--cy);font-weight:700;margin-bottom:4px">🥇 ${hf[0].name} 最近交易 (胜率${(hf[0].wr*100).toFixed(0)}%)</div>
+      <div class="trade-list" style="max-height:160px"><table style="width:100%"><thead><tr><th>买入时间</th><th>买价</th><th>卖出时间</th><th>卖价</th><th>结果</th><th>耗时</th><th>损益</th></tr></thead><tbody>
+        ${hf[0].trades.slice(-10).reverse().map(t=>`<tr>
+          <td class="mono" style="font-size:10px">${t.bt.slice(5)}</td><td class="mono">${t.bp.toFixed(0)}</td>
+          <td class="mono" style="font-size:10px">${t.st.slice(5)}</td><td class="mono">${t.sp.toFixed(0)}</td>
+          <td style="font-size:10px">${t.exitType}</td>
+          <td class="mono">${t.mins<60?t.mins+'分':(t.mins/60).toFixed(1)+'h'}</td>
+          <td class="mono" style="color:${t.win?'var(--gn)':'var(--rd)'};font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
+    <div style="margin-top:8px;padding:8px;background:#67e8f908;border-radius:6px;font-size:10px;line-height:1.6">
+      <b style="color:var(--cy)">TP/SL 策略数学</b>: 赢+5% · 输-3% · 盈亏比1.67 · 胜率>&thinsp;<b>37.5%</b>即可获利<br>
+      <b>期望值</b> = 胜率×5% - (1-胜率)×3% · 正值=长期赚钱 · 排名按期望值排序
+    </div>
+    <div style="height:1px;background:var(--bd);margin:14px 0"></div>
+
+    <!-- ========== TP/SL SWEEP SEARCH ========== -->
+    <div style="font-size:12px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 TP/SL 最佳参数搜索 <span style="font-size:9px;color:var(--dm);font-weight:400">· 扫描 TP(3%~10%) × SL(2%~8%) × 10种入场信号 = ${window._sweepResults?window._sweepResults.length:0}种组合</span></div>
+
+    <div style="font-size:10px;color:var(--dm);margin-bottom:6px">🏆 全局最佳 Top 10 (按期望值)</div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>#</th><th>入场信号</th><th>TP</th><th>SL</th><th>盈亏比</th><th>交易</th><th>✅</th><th>❌</th><th>胜率</th><th>期望值</th><th>$10K</th></tr></thead>
+      <tbody>
+        ${(window._sweepResults||[]).slice(0,10).map((r,i)=>`<tr style="${i===0?'background:#fbbf2412':''}">
+          <td style="color:var(--dm);font-weight:700">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
+          <td><b style="font-size:11px;color:${r.signalColor}">${r.signal}</b></td>
+          <td class="mono" style="color:var(--gn);font-weight:700">+${r.tp}%</td>
+          <td class="mono" style="color:var(--rd);font-weight:700">-${r.sl}%</td>
+          <td class="mono" style="color:var(--yl)">${r.ratio}</td>
+          <td class="mono">${r.rounds}</td>
+          <td class="mono" style="color:var(--gn)">${r.wins}</td>
+          <td class="mono" style="color:var(--rd)">${r.losses}</td>
+          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
+          <td class="mono" style="font-weight:700;color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
+          <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
 
-    ${hf[0]&&hf[0].trades.length?`
-    <div style="margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;border-left:2px solid var(--cy)">
-      <div style="font-size:10px;color:var(--cy);font-weight:700;margin-bottom:4px">🥇 ${hf[0].name} 最近交易</div>
-      <div class="trade-list" style="max-height:140px"><table style="width:100%"><thead><tr><th>买入时间</th><th>买价</th><th>卖出时间</th><th>卖价</th><th>耗时</th><th>利润</th></tr></thead><tbody>
-        ${hf[0].trades.slice(-8).reverse().map(t=>`<tr>
-          <td class="mono" style="font-size:10px">${t.bt.slice(5)}</td><td class="mono" style="color:var(--gn)">${t.bp.toFixed(1)}</td>
-          <td class="mono" style="font-size:10px">${t.st.slice(5)}</td><td class="mono" style="color:var(--rd)">${t.sp.toFixed(1)}</td>
-          <td class="mono">${t.mins}分</td><td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}">${t.ret>=0?'+':''}${t.ret.toFixed(2)}%</td>
+    <div style="font-size:10px;color:var(--dm);margin:10px 0 6px">📋 每个入场信号的最优TP/SL组合</div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>入场信号</th><th>最佳TP</th><th>最佳SL</th><th>交易</th><th>胜率</th><th>期望值</th><th>$10K</th></tr></thead>
+      <tbody>
+        ${Object.values(window._bestPerSignal||{}).sort((a,b)=>b.expectancy-a.expectancy).map(r=>`<tr>
+          <td><b style="font-size:11px;color:${r.signalColor}">${r.signal}</b></td>
+          <td class="mono" style="color:var(--gn);font-weight:700">+${r.tp}%</td>
+          <td class="mono" style="color:var(--rd);font-weight:700">-${r.sl}%</td>
+          <td class="mono">${r.rounds}</td>
+          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
+          <td class="mono" style="color:${r.expectancy>=0?'var(--gn)':'var(--rd)'};font-weight:700">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
+          <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
         </tr>`).join('')}
-      </tbody></table></div>
-    </div>`:''}
-    <div style="height:1px;background:var(--bd);margin:12px 0"></div>
-    `:''}
+      </tbody>
+    </table></div>
+
+    <div style="margin-top:8px;padding:8px;background:#fbbf2408;border-radius:6px;font-size:10px;line-height:1.6">
+      <b style="color:var(--yl)">🎯 参数搜索原理</b><br>
+      · TP(止盈) 测试: 3% / 4% / 5% / 6% / 7% / 8% / 10%<br>
+      · SL(止损) 测试: 2% / 3% / 4% / 5% / 6% / 8%<br>
+      · 高TP+低SL → 胜率要求低但触发少 · 低TP+高SL → 胜率高但利润薄<br>
+      · <b>损益平衡胜率</b> = SL / (TP+SL) · 例如 TP5%+SL3% 需胜率 > 3/(5+3) = 37.5%<br>
+      · 只显示至少完成2笔交易的组合 (避免单次运气)<br>
+      · 不同股票、不同行情阶段，最佳参数完全不同 — 每次切换股票会自动重算
+    </div>
+    <div style="height:1px;background:var(--bd);margin:14px 0"></div>
+    `:'<div style="font-size:11px;color:var(--dm);margin-bottom:10px">⏳ 等待5分钟数据加载后显示TP/SL参数搜索...</div>'}
 
     <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">📊 日线级别动态区间</div>
     <div style="overflow-x:auto"><table>
@@ -1054,13 +1163,11 @@ function go(data,live){
     </table></div>
 
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;line-height:1.6">
-      <b>高频策略说明</b><br>
-      · <b style="color:var(--cy)">5分钟策略</b>: 用盘中实时5分钟K线的BOLL/VWAP/MA计算买卖价，效率按 <b>%/小时</b> 排名<br>
-      · <b style="color:var(--yl)">日线策略</b>: 用每日收盘后指标计算次日买卖价，效率按 <b>%/天</b> 排名<br>
-      · <b>VWAP通道</b>: 成交量加权均价±偏移，反映当日主力成本，适合日内短差<br>
-      · <b>BOLL通道</b>: 波动率自适应，震荡市宽、趋势市窄<br>
-      · 今日若大幅回落，5分钟BOLL下轨会下移，买入价位跟着降 — 等企稳再触发<br>
-      · 所有买卖价随市场实时变动，5分钟自动刷新更新
+      <b>策略说明</b><br>
+      · <b style="color:var(--cy)">高频TP/SL</b>: 10种入场信号 × 统一止盈5%/止损3% · 盈亏比1.67 · 胜率>37.5%即获利<br>
+      · <b style="color:var(--yl)">日线动态区间</b>: 买卖价跟指标每天变 · 效率按%/天排名<br>
+      · 大幅回落时 → BOLL下轨/VWAP下移 → 触发更多入场信号 → 但止损也更容易触发<br>
+      · 所有策略5分钟自动刷新更新
     </div>
   </div>`;
   })()}
