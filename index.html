@@ -1345,7 +1345,39 @@ async function init(){
   if(d?.length>5){localStorage.setItem(cacheKey,JSON.stringify(d));go(d,true);}
   else{try{const c=JSON.parse(localStorage.getItem(cacheKey));if(c?.length>5){go(c,false);return;}}catch(e){}
     if(STOCK_CODE==='2513')go(FB,false);
-    else document.getElementById('app').innerHTML='<div class="loading" style="color:var(--rd)">⚠️ '+STOCK_HK+' 数据获取失败<br><div style="font-size:12px;color:var(--dm);margin-top:8px">请检查股票代码是否正确，或稍后重试</div></div>';
+    else{
+      document.getElementById('app').innerHTML=`
+      <div class="hdr"><div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="stk-input" id="stk-in" value="${STOCK_CODE}" onkeydown="if(event.key==='Enter')setStock(this.value)">
+            <button class="stk-go" onclick="setStock(document.getElementById('stk-in').value)">.HK</button>
+          </div>
+          <h1 style="color:var(--rd)">⚠️ ${STOCK_HK}</h1>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px"><button class="btn bg" onclick="rl()">🔄 重试</button></div></div>
+      <div class="card" style="border-color:var(--rd);margin-top:20px">
+        <div class="card-t" style="color:var(--rd)">数据获取失败</div>
+        <div style="font-size:13px;color:var(--tx);line-height:1.8">
+          ${STOCK_HK} 未能获取到数据。可能原因:<br>
+          · 股票代码错误或不存在<br>
+          · 该股票未上市或已停牌<br>
+          · 网络暂时不可用<br>
+        </div>
+        <div style="margin-top:16px;padding:12px;background:var(--c2);border-radius:8px">
+          <div style="font-size:12px;color:var(--dm);margin-bottom:8px">💡 左上角输入其他代码重试，例如:</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn bp" onclick="setStock('2513')">2513 智谱</button>
+            <button class="btn bp" onclick="setStock('3317')">3317 讯策</button>
+            <button class="btn bg" onclick="setStock('700')">700 腾讯</button>
+            <button class="btn bg" onclick="setStock('9988')">9988 阿里</button>
+            <button class="btn bg" onclick="setStock('1810')">1810 小米</button>
+            <button class="btn bg" onclick="setStock('3690')">3690 美团</button>
+          </div>
+        </div>
+      </div>`;
+    }
   }
 }
 init();
