@@ -355,7 +355,10 @@ function drawChart(tf){
   // Volume bars (scaled to bottom 15% of chart)
   const maxV=Math.max(...cd.map(x=>x.v))||1;
   const priceMin=Math.min(...cd.map(x=>x.l)),priceMax=Math.max(...cd.map(x=>x.h));
-  const volScale=(priceMax-priceMin)*0.18;
+  const priceRange=priceMax-priceMin||1;
+  const yPadTop=priceRange*0.12, yPadBot=priceRange*0.05;
+  const yMin=Math.max(0,priceMin-yPadBot), yMax=priceMax+yPadTop;
+  const volScale=priceRange*0.18;
   const volData=cd.map(x=>[priceMin,priceMin+x.v/maxV*volScale]);
   const volColor=cd.map(x=>x.c>=x.o?'#f8717130':'#34d39930');
 
@@ -390,7 +393,7 @@ function drawChart(tf){
     plugins:[wickPlugin],
     options:{responsive:true,maintainAspectRatio:false,
       scales:{x:{ticks:{color:'#556070',font:{size:currentTF==='5m'?9:10},maxTicksLimit:currentTF==='5m'?16:14,maxRotation:0},grid:{color:'#1e294012'}},
-        y:{position:'right',ticks:{color:'#556070',font:{size:11,family:'SF Mono,monospace'},callback:v=>v.toFixed(0)},grid:{color:'#1e294025'}}},
+        y:{position:'right',min:yMin,max:yMax,ticks:{color:'#556070',font:{size:11,family:'SF Mono,monospace'},callback:v=>v.toFixed(0)},grid:{color:'#1e294025'}}},
       plugins:{legend:{display:false},annotation:{annotations:an},tooltip:{mode:'index',intersect:false,callbacks:{
         label:ctx=>{if(ctx.datasetIndex===1){const d2=cd[ctx.dataIndex];return`开${d2.o} 高${d2.h} 低${d2.l} 收${d2.c}`;}
           if(ctx.datasetIndex===0)return`量 ${(cd[ctx.dataIndex].v/1e4).toFixed(0)}万`;
