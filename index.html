@@ -805,6 +805,43 @@ function go(data,live){
     ma5:I.m5[n],ma10:I.m10[n],ma20:I.m20[n],ma30:I.m30[n],kK:I.kd[n].k,kD:I.kd[n].d,kJ:I.kd[n].j,
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
   const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
+
+  // === Auto-position tracking: assume user follows signals ===
+  // Find best TP/SL from sweep, or use default 5%/3%
+  const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults[0]:null;
+  const autoTP=bestSweep?bestSweep.tp/100:0.05;
+  const autoSL=bestSweep?bestSweep.sl/100:0.03;
+  // Scan backwards for most recent buy signal
+  let autoPos=null;
+  for(let di=data.length-1;di>=Math.max(0,data.length-10);di--){
+    const dayBuys=R.filter(r=>r.tr.some(t=>t.t==='B'&&t.i===di));
+    if(dayBuys.length){
+      const best=dayBuys.sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0))[0];
+      const sig=best.tr.find(t=>t.t==='B'&&t.i===di);
+      const entryP=sig.trigP||data[di].c;
+      const tpTarget=entryP*(1+autoTP);
+      const slTarget=entryP*(1-autoSL);
+      // Check if TP or SL was already hit in subsequent days
+      let exitDay=null,exitType=null,exitP2=null;
+      for(let k=di+1;k<data.length;k++){
+        if(data[k].h>=tpTarget){exitDay=data[k].d;exitType='✅TP';exitP2=tpTarget;break;}
+        if(data[k].l<=slTarget){exitDay=data[k].d;exitType='❌SL';exitP2=slTarget;break;}
+      }
+      if(!exitDay){
+        // Still holding
+        const curPnl=((L.c-entryP)/entryP*100);
+        const holdDays2=data.length-1-di;
+        autoPos={holding:true,signal:best.n,entryDate:data[di].d,entryP,tpTarget,slTarget,
+          curPnl,holdDays:holdDays2,tpPct:(autoTP*100),slPct:(autoSL*100)};
+        break;
+      }else{
+        // Was holding but already exited — check if there's a newer buy after exit
+        continue;
+      }
+    }
+  }
+  // If no position found, check if we just got a sell signal (recently exited)
+  const recentSell=tS.length?tS[0]:null;
   const bt=cr.ma5?(cr.ma5*.92).toFixed(0):'—';
   const evts=STOCK_CODE==='2513'?NW.filter(e=>data.some(d=>d.d===e.d)):[];
 
@@ -854,7 +891,8 @@ function go(data,live){
       <div style="display:flex;align-items:center;gap:6px"><input class="stk-input" id="stk-in" value="${STOCK_CODE}" onkeydown="if(event.key==='Enter')setStock(this.value)"><button class="stk-go" onclick="setStock(document.getElementById('stk-in').value)">.HK</button></div>
       <h1>${STOCK_HK}</h1>
       <span class="badge" style="background:${live?'#34d39918':'#fb923c18'};color:${live?'var(--gn)':'var(--or)'}">${live?'● 实时数据':'● 离线数据'}</span>
-      <span class="badge" style="background:#f8717115;color:var(--rd)">无仓位 · 等待买点</span></div>
+      ${autoPos?`<span class="badge" style="background:#fbbf2420;color:var(--yl)">📍 持仓 ${autoPos.holdDays}天 · ${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</span>`:
+        `<span class="badge" style="background:#55607020;color:var(--dm)">空仓 · 等待信号</span>`}</div>
     <div style="display:flex;align-items:baseline;gap:12px;margin-top:4px">
       <span class="price">${L.c.toFixed(1)}</span>
       <span class="chg" style="color:${chg>=0?'var(--gn)':'var(--rd)'}">${chg>=0?'+':''}${chg.toFixed(1)} (${chg>=0?'+':''}${cp.toFixed(1)}%)</span></div>
@@ -952,6 +990,26 @@ function go(data,live){
         return`<div class="sig sb"><span style="color:var(--gn);font-weight:800">买</span><span style="flex:1;font-size:12px">${r.n}${trigInfo}</span><span class="mono" style="font-weight:800;color:${cc(r.hr[3]?.wr||0)}">${((r.hr[3]?.wr||0)*100).toFixed(0)}%</span></div>`;}).join('')}
       ${tS.map(r=>`<div class="sig ss"><span style="color:var(--rd);font-weight:800">卖</span><span style="flex:1;font-size:12px">${r.n}</span></div>`).join('')}
     </div>
+    ${autoPos?`
+    <div class="card" style="border-color:var(--yl);background:#fbbf2406">
+      <div class="card-t" style="color:var(--yl)">📍 持仓追踪</div>
+      <div style="font-size:11px;line-height:1.8">
+        <div>信号: <b>${autoPos.signal}</b></div>
+        <div>买入: <span class="mono">${autoPos.entryDate.slice(5)}</span> @<b class="mono">${autoPos.entryP.toFixed(0)}</b></div>
+        <div>持有: <b>${autoPos.holdDays}天</b> · 浮盈 <b class="mono" style="color:${autoPos.curPnl>=0?'var(--gn)':'var(--rd)'}">${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</b></div>
+        <div style="margin-top:6px;display:flex;gap:8px">
+          <div style="flex:1;padding:6px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #34d39930">
+            <div style="font-size:9px;color:var(--gn)">✅ 止盈 +${autoPos.tpPct.toFixed(0)}%</div>
+            <div class="mono" style="font-size:16px;font-weight:700;color:var(--gn)">${autoPos.tpTarget.toFixed(0)}</div>
+          </div>
+          <div style="flex:1;padding:6px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #f8717130">
+            <div style="font-size:9px;color:var(--rd)">❌ 止损 -${autoPos.slPct.toFixed(0)}%</div>
+            <div class="mono" style="font-size:16px;font-weight:700;color:var(--rd)">${autoPos.slTarget.toFixed(0)}</div>
+          </div>
+        </div>
+        <div style="margin-top:6px;font-size:9px;color:var(--dm)">系统假设信号触发即进场 · TP/SL来自最优参数搜索</div>
+      </div>
+    </div>`:''}
     <div class="card"><div class="card-t">📊 指标</div><div class="igrid">
       <div class="ibox"><div class="l">RSI${PARAMS.rsi_period}</div><div class="v" style="color:${cr.r>70?'var(--rd)':cr.r<30?'var(--gn)':'var(--yl)'}">${cr.r.toFixed(1)}</div><div class="n">${cr.r>75?'🔴强超买':cr.r>70?'⚠️超买':cr.r<30?'💚超卖':''}</div></div>
       <div class="ibox"><div class="l">BIAS${PARAMS.bias_ma}</div><div class="v" style="font-size:17px;color:${cr.bi5>12?'var(--rd)':cr.bi5<-8?'var(--gn)':'var(--yl)'}">${cr.bi5?.toFixed(1)||'—'}%</div><div class="n">${cr.bi5>12?'🔴超涨':cr.bi5<-8?'💚超跌':''}</div></div>
@@ -1043,134 +1101,86 @@ function go(data,live){
         <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
       </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
 
-  <!-- ====== HIGH-FREQUENCY TRADING REFERENCE ====== -->
+  <!-- ====== HIGH-FREQUENCY TRADING PANEL ====== -->
   ${(()=>{
-    const dr=window._dynResults;
     const hf=window._hfResults;
-    const curP=data[data.length-1].c;
+    const sw=window._sweepResults;
+    const bp=window._bestPerSignal;
+    const dr=window._dynResults;
     const has5m=hf&&hf.length>0;
+    const hasSw=sw&&sw.length>0;
+    const top3sw=hasSw?sw.slice(0,3):[];
+    const curP=data[data.length-1].c;
 
     return`
   <div class="card" style="border-color:var(--cy)">
-    <div class="card-t">⚡ 高频 TP5%/SL3% <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?'5分钟线回测 · 止盈5% · 止损3%':'等待5分钟数据'}</span></div>
+    <div class="card-t">⚡ 高频交易面板 <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?ID.length+'根5分K线':'等待5分钟数据'} · 动态TP/SL</span></div>
+
+    ${hasSw?`
+    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 最优 TP/SL 组合</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      ${top3sw.map((r,i)=>`<div style="flex:1;min-width:160px;padding:10px;background:${i===0?'#fbbf2408':'var(--c2)'};border-radius:8px;border:1px solid ${i===0?'#fbbf2430':'var(--bd)'}">
+        <div style="font-size:9px;color:var(--dm)">${i===0?'🥇 最佳':'🥈🥉'.charAt(i===1?0:1)+' #'+(i+1)}</div>
+        <div style="font-size:12px;font-weight:700;color:${r.signalColor};margin:4px 0">${r.signal}</div>
+        <div style="display:flex;gap:6px;margin-bottom:4px">
+          <span class="mono" style="padding:2px 6px;border-radius:4px;background:#34d39915;color:var(--gn);font-weight:700;font-size:12px">TP+${r.tp}%</span>
+          <span class="mono" style="padding:2px 6px;border-radius:4px;background:#f8717115;color:var(--rd);font-weight:700;font-size:12px">SL-${r.sl}%</span>
+        </div>
+        <div style="font-size:10px;line-height:1.5">
+          <span>胜率 <b class="mono" style="color:${r.wr>=0.5?'var(--gn)':'var(--yl)'}">${(r.wr*100).toFixed(0)}%</b></span> ·
+          <span>期望 <b class="mono" style="color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(1)}%</b></span><br>
+          <span>${r.rounds}笔 · ✅${r.wins} ❌${r.losses}</span> ·
+          <span>$10K→<b class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</b></span>
+        </div>
+      </div>`).join('')}
+    </div>
+    `:''}
 
     ${has5m?`
-    <div style="font-size:11px;font-weight:700;color:var(--cy);margin-bottom:6px">📈 5分钟 TP5%/SL3% <span style="font-size:9px;color:var(--dm);font-weight:400">· ${ID.length}根K线 · ${lastIntradayFetch?lastIntradayFetch.toLocaleString('zh-CN',{hour12:false}):''} · 10种入场信号比较</span></div>
+    <div style="font-size:11px;font-weight:700;color:var(--cy);margin-bottom:6px">📈 入场信号胜率 (TP${(autoTP*100).toFixed(0)}%/SL${(autoSL*100).toFixed(0)}%)</div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>排名</th><th>入场信号</th><th>交易</th><th style="color:var(--gn)">✅TP</th><th style="color:var(--rd)">❌SL</th><th>胜率</th><th>期望值</th><th>均耗时</th><th>$10K</th><th>状态</th></tr></thead>
+      <thead><tr><th>入场信号</th><th>笔</th><th>✅</th><th>❌</th><th>胜率</th><th>期望值</th><th>$10K</th><th style="font-size:9px">最优TP/SL</th></tr></thead>
       <tbody>
-        ${hf.map((r,i)=>`<tr style="${i===0?'background:#67e8f908':''}">
-          <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
-          <td><b style="font-size:11px;color:${r.c}">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
-          <td class="mono">${r.rounds}笔</td>
+        ${hf.slice(0,6).map((r,i)=>{
+          const best=bp?bp[r.name]:null;
+          return`<tr style="${i===0?'background:#67e8f908':''}">
+          <td><b style="font-size:11px;color:${r.c}">${r.name}</b></td>
+          <td class="mono">${r.rounds}</td>
           <td class="mono" style="color:var(--gn)">${r.wins}</td>
           <td class="mono" style="color:var(--rd)">${r.rounds-r.wins}</td>
-          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
-          <td class="mono" style="font-weight:700;color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
-          <td class="mono">${r.avgMins<60?r.avgMins.toFixed(0)+'分':(r.avgMins/60).toFixed(1)+'时'}</td>
+          <td class="mono" style="font-weight:700;color:${r.wr>=0.5?'var(--gn)':r.wr>=0.375?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
+          <td class="mono" style="color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(1)}%</td>
           <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
-          <td style="font-size:9px">${r.holdingNow?'<b style="color:var(--yl)">持仓 '+(r.holdMins<60?r.holdMins+'分':(r.holdMins/60).toFixed(1)+'h')+'<br>'+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%<br>TP:'+r.tpNow?.toFixed(0)+' SL:'+r.slNow?.toFixed(0)+'</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
-        </tr>`).join('')}
+          <td class="mono" style="font-size:9px;color:var(--dm)">${best?'+'+best.tp+'/-'+best.sl+'%':'—'}</td>
+        </tr>`;}).join('')}
       </tbody>
     </table></div>
-    ${hf[0]&&hf[0].trades.length?`
-    <div style="margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;border-left:2px solid var(--cy)">
-      <div style="font-size:10px;color:var(--cy);font-weight:700;margin-bottom:4px">🥇 ${hf[0].name} 最近交易 (胜率${(hf[0].wr*100).toFixed(0)}%)</div>
-      <div class="trade-list" style="max-height:160px"><table style="width:100%"><thead><tr><th>买入时间</th><th>买价</th><th>卖出时间</th><th>卖价</th><th>结果</th><th>耗时</th><th>损益</th></tr></thead><tbody>
-        ${hf[0].trades.slice(-10).reverse().map(t=>`<tr>
-          <td class="mono" style="font-size:10px">${t.bt.slice(5)}</td><td class="mono">${t.bp.toFixed(0)}</td>
-          <td class="mono" style="font-size:10px">${t.st.slice(5)}</td><td class="mono">${t.sp.toFixed(0)}</td>
-          <td style="font-size:10px">${t.exitType}</td>
-          <td class="mono">${t.mins<60?t.mins+'分':(t.mins/60).toFixed(1)+'h'}</td>
-          <td class="mono" style="color:${t.win?'var(--gn)':'var(--rd)'};font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
-        </tr>`).join('')}
-      </tbody></table></div>
-    </div>`:''}
-    <div style="margin-top:8px;padding:8px;background:#67e8f908;border-radius:6px;font-size:10px;line-height:1.6">
-      <b style="color:var(--cy)">TP/SL 策略数学</b>: 赢+5% · 输-3% · 盈亏比1.67 · 胜率>&thinsp;<b>37.5%</b>即可获利<br>
-      <b>期望值</b> = 胜率×5% - (1-胜率)×3% · 正值=长期赚钱 · 排名按期望值排序
-    </div>
-    <div style="height:1px;background:var(--bd);margin:14px 0"></div>
+    `:'<div style="color:var(--dm);font-size:11px;margin:10px 0">⏳ 5分钟数据加载后显示入场信号分析...</div>'}
 
-    <!-- ========== TP/SL SWEEP SEARCH ========== -->
-    <div style="font-size:12px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 TP/SL 最佳参数搜索 <span style="font-size:9px;color:var(--dm);font-weight:400">· 扫描 TP(3%~10%) × SL(2%~8%) × 10种入场信号 = ${window._sweepResults?window._sweepResults.length:0}种组合</span></div>
-
-    <div style="font-size:10px;color:var(--dm);margin-bottom:6px">🏆 全局最佳 Top 10 (按期望值)</div>
+    ${dr&&dr.length?`
+    <div style="font-size:11px;font-weight:700;color:var(--yl);margin:10px 0 6px">📊 日线动态区间</div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>#</th><th>入场信号</th><th>TP</th><th>SL</th><th>盈亏比</th><th>交易</th><th>✅</th><th>❌</th><th>胜率</th><th>期望值</th><th>$10K</th></tr></thead>
+      <thead><tr><th>策略</th><th>今买</th><th>今卖</th><th>价差</th><th>轮次</th><th>日效率</th><th>$10K</th></tr></thead>
       <tbody>
-        ${(window._sweepResults||[]).slice(0,10).map((r,i)=>`<tr style="${i===0?'background:#fbbf2412':''}">
-          <td style="color:var(--dm);font-weight:700">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
-          <td><b style="font-size:11px;color:${r.signalColor}">${r.signal}</b></td>
-          <td class="mono" style="color:var(--gn);font-weight:700">+${r.tp}%</td>
-          <td class="mono" style="color:var(--rd);font-weight:700">-${r.sl}%</td>
-          <td class="mono" style="color:var(--yl)">${r.ratio}</td>
-          <td class="mono">${r.rounds}</td>
-          <td class="mono" style="color:var(--gn)">${r.wins}</td>
-          <td class="mono" style="color:var(--rd)">${r.losses}</td>
-          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
-          <td class="mono" style="font-weight:700;color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
-          <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table></div>
-
-    <div style="font-size:10px;color:var(--dm);margin:10px 0 6px">📋 每个入场信号的最优TP/SL组合</div>
-    <div style="overflow-x:auto"><table>
-      <thead><tr><th>入场信号</th><th>最佳TP</th><th>最佳SL</th><th>交易</th><th>胜率</th><th>期望值</th><th>$10K</th></tr></thead>
-      <tbody>
-        ${Object.values(window._bestPerSignal||{}).sort((a,b)=>b.expectancy-a.expectancy).map(r=>`<tr>
-          <td><b style="font-size:11px;color:${r.signalColor}">${r.signal}</b></td>
-          <td class="mono" style="color:var(--gn);font-weight:700">+${r.tp}%</td>
-          <td class="mono" style="color:var(--rd);font-weight:700">-${r.sl}%</td>
-          <td class="mono">${r.rounds}</td>
-          <td class="mono" style="font-weight:700;color:${r.wr>=0.6?'var(--gn)':r.wr>=0.4?'var(--yl)':'var(--rd)'}">${(r.wr*100).toFixed(0)}%</td>
-          <td class="mono" style="color:${r.expectancy>=0?'var(--gn)':'var(--rd)'};font-weight:700">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(2)}%</td>
-          <td class="mono" style="color:${r.eq>=10000?'var(--gn)':'var(--rd)'}">$${r.eq.toFixed(0)}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table></div>
-
-    <div style="margin-top:8px;padding:8px;background:#fbbf2408;border-radius:6px;font-size:10px;line-height:1.6">
-      <b style="color:var(--yl)">🎯 参数搜索原理</b><br>
-      · TP(止盈) 测试: 3% / 4% / 5% / 6% / 7% / 8% / 10%<br>
-      · SL(止损) 测试: 2% / 3% / 4% / 5% / 6% / 8%<br>
-      · 高TP+低SL → 胜率要求低但触发少 · 低TP+高SL → 胜率高但利润薄<br>
-      · <b>损益平衡胜率</b> = SL / (TP+SL) · 例如 TP5%+SL3% 需胜率 > 3/(5+3) = 37.5%<br>
-      · 只显示至少完成2笔交易的组合 (避免单次运气)<br>
-      · 不同股票、不同行情阶段，最佳参数完全不同 — 每次切换股票会自动重算
-    </div>
-    <div style="height:1px;background:var(--bd);margin:14px 0"></div>
-    `:'<div style="font-size:11px;color:var(--dm);margin-bottom:10px">⏳ 等待5分钟数据加载后显示TP/SL参数搜索...</div>'}
-
-    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">📊 日线级别动态区间</div>
-    <div style="overflow-x:auto"><table>
-      <thead><tr><th>排名</th><th>策略</th><th>今日买入</th><th>今日卖出</th><th>价差</th><th>完成轮</th><th>均持有</th><th>日效率</th><th>$10K终值</th><th>状态</th></tr></thead>
-      <tbody>
-        ${(dr||[]).map((r,i)=>`<tr style="${i===0?'background:#fbbf2408':''}">
-          <td style="font-weight:700;color:var(--dm)">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
-          <td><b style="font-size:11px">${r.name}</b><br><span style="font-size:9px;color:var(--dm)">${r.desc}</span></td>
-          <td class="mono" style="color:var(--gn);font-weight:700">${r.curBuy?.toFixed(0)||'—'}</td>
-          <td class="mono" style="color:var(--rd);font-weight:700">${r.curSell?.toFixed(0)||'—'}</td>
+        ${dr.slice(0,4).map(r=>`<tr>
+          <td style="font-size:11px"><b>${r.name}</b></td>
+          <td class="mono" style="color:var(--gn)">${r.curBuy?.toFixed(0)||'—'}</td>
+          <td class="mono" style="color:var(--rd)">${r.curSell?.toFixed(0)||'—'}</td>
           <td class="mono">${r.curBuy&&r.curSell?((r.curSell-r.curBuy)/r.curBuy*100).toFixed(1)+'%':'—'}</td>
-          <td class="mono">${r.rounds}次</td>
-          <td class="mono">${r.avgDays.toFixed(1)}天</td>
-          <td class="mono" style="color:var(--yl);font-weight:700">${r.dailyEff.toFixed(2)}%</td>
+          <td class="mono">${r.rounds}</td>
+          <td class="mono" style="color:var(--yl)">${r.dailyEff.toFixed(2)}%</td>
           <td class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</td>
-          <td style="font-size:10px">${r.holdingNow?'<b style="color:var(--yl)">持仓'+r.holdDays+'天 '+(r.curPnl>=0?'+':'')+r.curPnl.toFixed(1)+'%</b>':'<span style="color:var(--dm)">空仓</span>'}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
+    `:''}
 
-    <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:8px;background:var(--c2);border-radius:6px;line-height:1.6">
-      <b>策略说明</b><br>
-      · <b style="color:var(--cy)">高频TP/SL</b>: 10种入场信号 × 统一止盈5%/止损3% · 盈亏比1.67 · 胜率>37.5%即获利<br>
-      · <b style="color:var(--yl)">日线动态区间</b>: 买卖价跟指标每天变 · 效率按%/天排名<br>
-      · 大幅回落时 → BOLL下轨/VWAP下移 → 触发更多入场信号 → 但止损也更容易触发<br>
-      · 所有策略5分钟自动刷新更新
+    <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px;line-height:1.5">
+      TP/SL扫描: TP(3~10%) × SL(2~8%) × 10种入场 = ${hasSw?sw.length:0}组合 · 胜率>SL/(TP+SL)即可获利 · 切换股票自动重算 · 5分钟刷新
     </div>
   </div>`;
   })()}
+
 
   <!-- ====== STRATEGY COMPETITION ====== -->
   ${(()=>{
