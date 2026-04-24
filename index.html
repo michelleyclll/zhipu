@@ -108,8 +108,12 @@ const NW=[
   {d:'2026-01-08',t:'IPO上市116.2',p:'n'},{d:'2026-01-12',t:'滴滴合作+上市热',p:'b'},
   {d:'2026-02-12',t:'GLM-5+涨价30%',p:'b'},{d:'2026-02-20',t:'致歉反确认稀缺',p:'b'},
   {d:'2026-02-23',t:'AI板块暴跌',p:'r'},{d:'2026-03-07',t:'美伊战争冲击',p:'r'},
-  {d:'2026-03-31',t:'年报前大涨',p:'b'},{d:'2026-04-01',t:'年报+131%+API涨83%',p:'b'},
-  {d:'2026-04-08',t:'GLM5.1+涨价+停火',p:'b'},{d:'2026-04-09',t:'冲999未破千',p:'r'},
+  {d:'2026-03-16',t:'GLM5-Turbo+涨价20%',p:'b'},
+  {d:'2026-03-31',t:'年报前大涨',p:'b'},{d:'2026-04-01',t:'年报+131%·API涨83%·ARR17亿',p:'b'},
+  {d:'2026-04-08',t:'GLM5.1发布+涨价10%',p:'b'},{d:'2026-04-09',t:'冲999·腾讯云涨价',p:'b'},
+  {d:'2026-04-10',t:'破千·市值4387亿',p:'b'},
+  {d:'2026-04-14',t:'资金转移分析·JP摩根报告',p:'n'},
+  {d:'2026-04-22',t:'Token需求暴涨·ARR2.5亿美元',p:'b'},
   {d:'2026-07-08',t:'⚠️基石+SII解禁',p:'w'},
   {d:'2027-01-08',t:'⚠️创始人+VC全解禁',p:'w'},
 ];
@@ -772,38 +776,50 @@ async function fetchNews(){
   if(!el)return;
   const code5=STOCK_CODE.padStart(5,'0');
   const sources=[
-    {name:'东财',url:`https://search-api-web.eastmoney.com/search/jsonp?cb=cb&param={"uid":"","keyword":"${code5}.HK","type":["cmsArticleWebOld"],"pageIndex":1,"pageSize":8,"sort":"default","source":"all"}`},
-    {name:'腾讯',url:`https://web.ifzq.gtimg.cn/appstock/app/hkstock/news?code=${STOCK_HKFULL}&num=8`},
+    {name:'东财',url:`https://search-api-web.eastmoney.com/search/jsonp?cb=cb&param={"uid":"","keyword":"${code5}.HK","type":["cmsArticleWebOld"],"pageIndex":1,"pageSize":8,"sort":"default","source":"all"}`,
+      parse:j=>{if(j?.IsSuccess&&j?.Result?.cmsArticleWebOld)return j.Result.cmsArticleWebOld.map(a=>({t:a.Title||'',d:a.Date?.slice(0,10)||'',u:a.Url||''})).filter(x=>x.t);return[];}},
+    {name:'东财资讯',url:`https://push2.eastmoney.com/api/qt/stock/get?secid=116.${code5}&fields=f57,f58,f43,f170&fltt=2`,
+      parse:j=>{return[];}},// fallback, won't have news but tests connectivity
+    {name:'腾讯',url:`https://web.ifzq.gtimg.cn/appstock/app/hkstock/news?code=${STOCK_HKFULL}&num=8`,
+      parse:j=>{if(j?.data?.data?.length)return j.data.data.map(a=>({t:a.title||a[1]||'',d:(a.date||a[3]||'').slice(0,10),u:a.url||a[2]||''})).filter(x=>x.t);return[];}},
   ];
+  let tried=0,lastErr='';
   for(const src of sources){
     for(const px of PX){
+      tried++;
       try{
-        const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),6000);
+        const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),5000);
         const r=await fetch(px(src.url),{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));
-        if(!r.ok)continue;
+        if(!r.ok){lastErr=src.name+' '+r.status;continue;}
         let txt=await r.text();
         txt=txt.replace(/^[^({[]*[\(]/,'').replace(/\);?\s*$/,'');
-        let j;try{j=JSON.parse(txt);}catch(e){continue;}
-        let items=[];
-        if(j?.IsSuccess&&j?.Result?.cmsArticleWebOld){
-          items=j.Result.cmsArticleWebOld.map(a=>({t:a.Title||'',d:a.Date?.slice(0,10)||'',u:a.Url||''})).filter(x=>x.t);
-        }
-        if(j?.data?.data?.length){
-          items=j.data.data.map(a=>({t:a.title||a[1]||'',d:(a.date||a[3]||'').slice(0,10),u:a.url||a[2]||''})).filter(x=>x.t);
-        }
+        let j;try{j=JSON.parse(txt);}catch(e){lastErr=src.name+' JSON解析失败';continue;}
+        const items=src.parse(j);
         if(!items.length)continue;
         el.innerHTML=items.slice(0,8).map(a=>`<div class="ev" style="${a.u?'cursor:pointer':''}" ${a.u?'onclick="window.open(\''+a.u.replace(/'/g,"\\'")+'\',\'_blank\')"':''}><div style="width:6px;height:6px;border-radius:50%;background:var(--ac);flex-shrink:0"></div><div class="mono" style="font-size:10px;color:var(--dm);min-width:40px">${a.d.slice(5)}</div><div style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.t}</div></div>`).join('')+
           `<div style="font-size:9px;color:var(--dm);margin-top:4px;text-align:right">来源: ${src.name} · 点击查看原文</div>`;
         return;
-      }catch(e){}
+      }catch(e){lastErr=src.name+' '+e.message;}
     }
   }
-  el.innerHTML='<div style="color:var(--dm);font-size:11px">暂无最新新闻</div>';
+  el.innerHTML=`<div style="color:var(--dm);font-size:11px">动态新闻获取失败 (尝试${tried}次) <span style="font-size:9px">${lastErr}</span><br><span style="font-size:10px">CORS代理可能不可用 · 上方手动事件仍可参考</span></div>`;
 }
 
 function go(data,live){
   D=data;const I=calc(data),R=stBt(data,I);
-  const n=data.length-1,L=data[n],P=data[n-1],chg=L.c-P.c,cp=chg/P.c*100;
+  const n=data.length-1,L=data[n],P=data[Math.max(n-1,0)],chg=L.c-P.c,cp=P.c?chg/P.c*100:0;
+  // Data sufficiency check
+  const dLen=data.length;
+  const dataSuff=dLen>=30?'ok':dLen>=14?'partial':'insufficient';
+  const dataWarnHTML=dataSuff==='insufficient'?
+    `<div style="padding:8px 12px;background:#f8717112;border:1px solid #f8717130;border-radius:8px;margin-bottom:12px;font-size:11px;color:var(--or);line-height:1.6">
+      ⚠️ <b>数据仅 ${dLen} 天</b> — 大部分技术指标需要至少14-30天数据才有统计意义。当前显示的信号和回测<b>不具参考价值</b>。<br>
+      · RSI14 需14天 ${dLen>=14?'✅':'❌'} · MA20 需20天 ${dLen>=20?'✅':'❌'} · BOLL(20) 需20天 ${dLen>=20?'✅':'❌'} · MA30 需30天 ${dLen>=30?'✅':'❌'}<br>
+      · 建议等数据累积到30天以上再参考技术指标
+    </div>`:dataSuff==='partial'?
+    `<div style="padding:6px 10px;background:#fbbf2408;border:1px solid #fbbf2425;border-radius:8px;margin-bottom:12px;font-size:11px;color:var(--yl);line-height:1.5">
+      ⚠️ 数据 ${dLen} 天 — 部分指标可用(RSI/KDJ)，但MA20/MA30/BOLL等长周期指标可能不准确，回测样本偏少。
+    </div>`:'';
   const cr={r:I.r14[n],dif:I.mc.dif[n],dea:I.mc.dea[n],bar:I.mc.bar[n],bi5:I.bi5[n],bi10:I.bi10[n],
     ma5:I.m5[n],ma10:I.m10[n],ma20:I.m20[n],ma30:I.m30[n],kK:I.kd[n].k,kD:I.kd[n].d,kJ:I.kd[n].j,
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
@@ -895,7 +911,8 @@ function go(data,live){
       <h1>${STOCK_HK}</h1>
       <span class="badge" style="background:${live?'#34d39918':'#fb923c18'};color:${live?'var(--gn)':'var(--or)'}">${live?'● 实时数据':'● 离线数据'}</span>
       ${autoPos?`<span class="badge" style="background:#fbbf2420;color:var(--yl)">📍 持仓 ${autoPos.holdDays}天 · ${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</span>`:
-        `<span class="badge" style="background:#55607020;color:var(--dm)">空仓 · 等待信号</span>`}</div>
+        `<span class="badge" style="background:#55607020;color:var(--dm)">空仓 · 等待信号</span>`}
+      ${dLen<30?`<span class="badge" style="background:#f8717115;color:var(--or)">${dLen}天 · 数据不足</span>`:''}</div>
     <div style="display:flex;align-items:baseline;gap:12px;margin-top:4px">
       <span class="price">${L.c.toFixed(1)}</span>
       <span class="chg" style="color:${chg>=0?'var(--gn)':'var(--rd)'}">${chg>=0?'+':''}${chg.toFixed(1)} (${chg>=0?'+':''}${cp.toFixed(1)}%)</span></div>
@@ -914,6 +931,9 @@ function go(data,live){
     <div><div style="font-size:10px;color:var(--dm);margin-bottom:3px">最低</div><input type="number" id="il"></div>
     <div><div style="font-size:10px;color:var(--dm);margin-bottom:3px">成交量</div><input type="number" id="iv"></div>
     <button class="btn" style="background:var(--gn);color:#000" onclick="ap()">确认</button></div></div>
+
+  <!-- ====== DATA SUFFICIENCY WARNING ====== -->
+  ${dataWarnHTML}
 
   <!-- ====== PARAMETER PANEL ====== -->
   <div class="card" id="param-card">
@@ -986,6 +1006,7 @@ function go(data,live){
   </div><div class="c4">
     <div class="card" style="border-color:${tB.length?'var(--gn)':tS.length?'var(--rd)':'var(--bd)'}">
       <div class="card-t">🚨 今日信号 <span style="font-size:10px;color:var(--dm);font-weight:400">→ ${PARAMS.entry_mode==='next_open'?'明日开盘操作':PARAMS.entry_mode==='trigger'?'挂限价单/尾盘操作':'收盘前操作'}</span></div>
+      ${dataSuff==='insufficient'?'<div style="color:var(--or);font-size:11px;margin-bottom:6px">⚠️ 数据不足'+dLen+'天，信号不可靠</div>':''}
       ${!tB.length&&!tS.length?'<div style="color:var(--dm);font-size:12px">无信号 — 继续等待</div>':''}
       ${tB.map(r=>{
         const lastBuy=r.tr.filter(t=>t.t==='B').slice(-1)[0];
@@ -1043,7 +1064,7 @@ function go(data,live){
 
   <div class="c6">
   <!-- ====== STRATEGY RANKING WITH EXPANDABLE DETAILS ====== -->
-  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 持有N日收盘卖出 · 点击展开</span></div><div style="overflow-x:auto"><table>
+  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 持有N日收盘卖出 · 点击展开${dataSuff!=='ok'?' · ⚠️'+dLen+'天数据':''}</span></div><div style="overflow-x:auto"><table>
     <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>盘中↓</th><th>今</th></tr></thead>
     <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0,amx:0,amd:0},h5=r.hr[5]||{wr:0,ar:0};
       const detailId='sd'+i;
