@@ -104,6 +104,20 @@ function setStock(code){
   document.getElementById('app').innerHTML='<div class="loading"><div class="sp"></div><div style="margin-top:12px">切换至 '+STOCK_HK+'...</div></div>';
   init();
 }
+
+// ====== Manual position tracking (localStorage) ======
+function getPos(){
+  try{const p=JSON.parse(localStorage.getItem('pos_'+STOCK_CODE));if(p&&p.price)return p;}catch(e){}return null;
+}
+function setPos(price,date,note){
+  if(!price)return clearPos();
+  localStorage.setItem('pos_'+STOCK_CODE,JSON.stringify({price:+price,date:date||new Date().toISOString().slice(0,10),note:note||'',ts:Date.now()}));
+  rl(true);
+}
+function clearPos(){
+  localStorage.removeItem('pos_'+STOCK_CODE);rl(true);
+}
+
 const NW=[
   {d:'2026-01-08',t:'IPO上市116.2',p:'n'},{d:'2026-01-12',t:'滴滴合作+上市热',p:'b'},
   {d:'2026-02-12',t:'GLM-5+涨价30%',p:'b'},{d:'2026-02-20',t:'致歉反确认稀缺',p:'b'},
@@ -114,6 +128,9 @@ const NW=[
   {d:'2026-04-10',t:'破千·市值4387亿',p:'b'},
   {d:'2026-04-14',t:'资金转移分析·JP摩根报告',p:'n'},
   {d:'2026-04-22',t:'Token需求暴涨·ARR2.5亿美元',p:'b'},
+  {d:'2026-04-24',t:'DeepSeek-V4上线·AI板块重挫',p:'r'},
+  {d:'2026-04-25',t:'DS V4-Pro 2.5折·价格战升级',p:'r'},
+  {d:'2026-04-28',t:'智谱跌超13%·DS冲击持续',p:'r'},
   {d:'2026-07-08',t:'⚠️基石+SII解禁',p:'w'},
   {d:'2027-01-08',t:'⚠️创始人+VC全解禁',p:'w'},
 ];
@@ -754,21 +771,21 @@ let D=[],ch1=null,ch2=null,refreshTimer=null,refreshCountdown=300,lastFetchTime=
 let currentTF='1d'; // '5m','1d','1w','1m'
 const cc=v=>v>=.6?'var(--gn)':v>=.4?'var(--yl)':'var(--rd)';
 
-// ====== Auto-refresh: standalone 5-min timer (not dependent on go()) ======
-let _refreshId=setInterval(()=>{
-  refreshCountdown--;
+// ====== Auto-refresh: standalone 5-min timer ======
+setInterval(function(){
   try{
-    const bar=document.querySelector('.refresh-fill');
+    refreshCountdown--;
+    var bar=document.querySelector('.refresh-fill');
     if(bar)bar.style.width=((300-refreshCountdown)/300*100)+'%';
-    const lbl=document.getElementById('refresh-lbl');
-    if(lbl){const m=Math.floor(Math.max(0,refreshCountdown)/60),s=Math.max(0,refreshCountdown)%60;lbl.textContent=`${m}:${s.toString().padStart(2,'0')}`;}
-  }catch(e){}
-  if(refreshCountdown<=0){
-    refreshCountdown=300;
-    rl(true).catch(e=>console.warn('auto-refresh error',e));
-  }
+    var lbl=document.getElementById('refresh-lbl');
+    if(lbl){var m=Math.floor(Math.max(0,refreshCountdown)/60),s=Math.max(0,refreshCountdown)%60;lbl.textContent=m+':'+('0'+s).slice(-2);}
+    if(refreshCountdown<=0){
+      refreshCountdown=300;
+      try{rl(true).catch(function(e){console.warn('rl error',e);});}catch(e){}
+    }
+  }catch(e){console.warn('refresh-tick',e);}
 },1000);
-function startAutoRefresh(){refreshCountdown=300;} // just reset countdown when go() is called
+function startAutoRefresh(){refreshCountdown=300;}
 
 // ====== Dynamic news fetching ======
 async function fetchNews(){
@@ -825,42 +842,22 @@ function go(data,live){
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
   const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
 
-  // === Auto-position tracking: assume user follows signals ===
-  // Find best TP/SL from sweep, or use default 5%/3%
+  // === Manual position tracking (from localStorage) ===
   const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults[0]:null;
   const autoTP=bestSweep?bestSweep.tp/100:0.05;
   const autoSL=bestSweep?bestSweep.sl/100:0.03;
-  // Scan backwards for most recent buy signal
+  const manualPos=getPos();
   let autoPos=null;
-  for(let di=data.length-1;di>=Math.max(0,data.length-10);di--){
-    const dayBuys=R.filter(r=>r.tr.some(t=>t.t==='B'&&t.i===di));
-    if(dayBuys.length){
-      const best=dayBuys.sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0))[0];
-      const sig=best.tr.find(t=>t.t==='B'&&t.i===di);
-      const entryP=sig.trigP||data[di].c;
-      const tpTarget=entryP*(1+autoTP);
-      const slTarget=entryP*(1-autoSL);
-      // Check if TP or SL was already hit in subsequent days
-      let exitDay=null,exitType=null,exitP2=null;
-      for(let k=di+1;k<data.length;k++){
-        if(data[k].h>=tpTarget){exitDay=data[k].d;exitType='✅TP';exitP2=tpTarget;break;}
-        if(data[k].l<=slTarget){exitDay=data[k].d;exitType='❌SL';exitP2=slTarget;break;}
-      }
-      if(!exitDay){
-        // Still holding
-        const curPnl=((L.c-entryP)/entryP*100);
-        const holdDays2=data.length-1-di;
-        autoPos={holding:true,signal:best.n,entryDate:data[di].d,entryP,tpTarget,slTarget,
-          curPnl,holdDays:holdDays2,tpPct:(autoTP*100),slPct:(autoSL*100)};
-        break;
-      }else{
-        // Was holding but already exited — check if there's a newer buy after exit
-        continue;
-      }
-    }
+  if(manualPos){
+    const ep=manualPos.price;
+    const tpTarget=ep*(1+autoTP);
+    const slTarget=ep*(1-autoSL);
+    const curPnl=((L.c-ep)/ep*100);
+    const entryIdx=data.findIndex(d=>d.d>=manualPos.date);
+    const holdDays2=entryIdx>=0?data.length-1-entryIdx:0;
+    autoPos={holding:true,signal:manualPos.note||'手动记录',entryDate:manualPos.date,entryP:ep,
+      tpTarget,slTarget,curPnl,holdDays:holdDays2,tpPct:(autoTP*100),slPct:(autoSL*100)};
   }
-  // If no position found, check if we just got a sell signal (recently exited)
-  const recentSell=tS.length?tS[0]:null;
   const bt=cr.ma5?(cr.ma5*.92).toFixed(0):'—';
   const evts=STOCK_CODE==='2513'?NW.filter(e=>data.some(d=>d.d===e.d)):[];
 
@@ -1014,27 +1011,40 @@ function go(data,live){
         return`<div class="sig sb"><span style="color:var(--gn);font-weight:800">买</span><span style="flex:1;font-size:12px">${r.n}${trigInfo}</span><span class="mono" style="font-weight:800;color:${cc(r.hr[3]?.wr||0)}">${((r.hr[3]?.wr||0)*100).toFixed(0)}%</span></div>`;}).join('')}
       ${tS.map(r=>`<div class="sig ss"><span style="color:var(--rd);font-weight:800">卖</span><span style="flex:1;font-size:12px">${r.n}</span></div>`).join('')}
     </div>
-    ${autoPos?`
-    <div class="card" style="border-color:var(--yl);background:#fbbf2406">
-      <div class="card-t" style="color:var(--yl)">📍 持仓追踪</div>
-      <div style="font-size:11px;line-height:1.8">
-        <div>信号: <b>${autoPos.signal}</b></div>
-        <div>买入: <span class="mono">${autoPos.entryDate.slice(5)}</span> @<b class="mono">${autoPos.entryP.toFixed(0)}</b></div>
-        <div>持有: <b>${autoPos.holdDays}天</b> · 浮盈 <b class="mono" style="color:${autoPos.curPnl>=0?'var(--gn)':'var(--rd)'}">${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</b></div>
-        <div style="margin-top:6px;display:flex;gap:8px">
-          <div style="flex:1;padding:6px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #34d39930">
-            <div style="font-size:9px;color:var(--gn)">✅ 止盈 +${autoPos.tpPct.toFixed(0)}%</div>
-            <div class="mono" style="font-size:16px;font-weight:700;color:var(--gn)">${autoPos.tpTarget.toFixed(0)}</div>
-          </div>
-          <div style="flex:1;padding:6px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #f8717130">
-            <div style="font-size:9px;color:var(--rd)">❌ 止损 -${autoPos.slPct.toFixed(0)}%</div>
-            <div class="mono" style="font-size:16px;font-weight:700;color:var(--rd)">${autoPos.slTarget.toFixed(0)}</div>
-          </div>
-        </div>
-        <div style="margin-top:6px;font-size:9px;color:var(--dm)">系统假设信号触发即进场 · TP/SL来自最优参数搜索</div>
+    <div class="card" style="border-color:${autoPos?'var(--yl)':'var(--bd)'};background:${autoPos?'#fbbf2406':''}">
+      <div class="card-t" style="color:var(--yl)">📍 我的持仓</div>
+      ${autoPos?`
+      <div style="font-size:12px;line-height:1.8;margin-bottom:8px">
+        <div>买入: <b class="mono">${autoPos.entryDate}</b> @<b class="mono" style="font-size:15px">${autoPos.entryP.toFixed(0)}</b> <span style="font-size:10px;color:var(--dm)">${autoPos.signal}</span></div>
+        <div>现价: <b class="mono" style="font-size:15px">${L.c.toFixed(1)}</b> · 浮盈 <b class="mono" style="font-size:15px;color:${autoPos.curPnl>=0?'var(--gn)':'var(--rd)'}">${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</b> · ${autoPos.holdDays}天</div>
       </div>
-    </div>`:''}
-    <div class="card"><div class="card-t">📊 指标</div><div class="igrid">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div style="flex:1;padding:8px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #34d39930">
+          <div style="font-size:9px;color:var(--gn)">✅ 止盈 +${autoPos.tpPct.toFixed(0)}%</div>
+          <div class="mono" style="font-size:18px;font-weight:700;color:var(--gn)">${autoPos.tpTarget.toFixed(0)}</div>
+          <div style="font-size:9px;color:var(--dm)">距${((autoPos.tpTarget-L.c)/L.c*100).toFixed(1)}%</div>
+        </div>
+        <div style="flex:1;padding:8px;background:var(--c2);border-radius:6px;text-align:center;border:1px solid #f8717130">
+          <div style="font-size:9px;color:var(--rd)">❌ 止损 -${autoPos.slPct.toFixed(0)}%</div>
+          <div class="mono" style="font-size:18px;font-weight:700;color:var(--rd)">${autoPos.slTarget.toFixed(0)}</div>
+          <div style="font-size:9px;color:var(--dm)">距${((L.c-autoPos.slTarget)/L.c*100).toFixed(1)}%</div>
+        </div>
+      </div>
+      ${autoPos.curPnl<=-autoPos.slPct?'<div style="padding:6px 8px;background:#f8717120;border-radius:6px;font-size:12px;color:var(--rd);font-weight:700;margin-bottom:6px">🚨 已触发止损线！建议立即卖出</div>':''}
+      ${autoPos.curPnl>=autoPos.tpPct?'<div style="padding:6px 8px;background:#34d39920;border-radius:6px;font-size:12px;color:var(--gn);font-weight:700;margin-bottom:6px">🎯 已达止盈目标！考虑获利了结</div>':''}
+      <button class="btn" style="background:var(--rd);color:#fff;width:100%;padding:8px;font-size:12px" onclick="if(confirm('确认清除持仓记录？'))clearPos()">卖出 / 清除持仓</button>
+      `:`
+      <div style="font-size:11px;color:var(--dm);margin-bottom:8px">记录你的买入，系统自动计算TP/SL目标</div>
+      <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+        <div><div style="font-size:9px;color:var(--dm);margin-bottom:2px">买入价</div>
+          <input type="number" id="pos-price" placeholder="${L.c.toFixed(0)}" style="width:100px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 8px;color:var(--yl);font-family:'SF Mono',monospace;font-size:14px;font-weight:700"></div>
+        <div><div style="font-size:9px;color:var(--dm);margin-bottom:2px">日期</div>
+          <input type="date" id="pos-date" value="${L.d}" style="width:130px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 8px;color:var(--tx);font-size:12px"></div>
+        <button class="btn" style="background:var(--gn);color:#000;padding:6px 16px;font-size:12px;font-weight:700" onclick="const p=document.getElementById('pos-price').value;const d=document.getElementById('pos-date').value;if(!p)return alert('请输入买入价');setPos(p,d)">记录买入</button>
+      </div>
+      <div style="font-size:9px;color:var(--dm);margin-top:6px">TP/SL参数来自最优搜索: TP+${(autoTP*100).toFixed(0)}% / SL-${(autoSL*100).toFixed(0)}%</div>
+      `}
+    </div><div class="card"><div class="card-t">📊 指标</div><div class="igrid">
       <div class="ibox"><div class="l">RSI${PARAMS.rsi_period}</div><div class="v" style="color:${cr.r>70?'var(--rd)':cr.r<30?'var(--gn)':'var(--yl)'}">${cr.r.toFixed(1)}</div><div class="n">${cr.r>75?'🔴强超买':cr.r>70?'⚠️超买':cr.r<30?'💚超卖':''}</div></div>
       <div class="ibox"><div class="l">BIAS${PARAMS.bias_ma}</div><div class="v" style="font-size:17px;color:${cr.bi5>12?'var(--rd)':cr.bi5<-8?'var(--gn)':'var(--yl)'}">${cr.bi5?.toFixed(1)||'—'}%</div><div class="n">${cr.bi5>12?'🔴超涨':cr.bi5<-8?'💚超跌':''}</div></div>
       <div class="ibox"><div class="l">量比</div><div class="v" style="font-size:17px;color:${cr.vr>2?'var(--rd)':'var(--dm)'}">${cr.vr.toFixed(1)}x</div></div>
