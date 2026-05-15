@@ -1157,7 +1157,7 @@ function go(data,live){
 
   <div class="c6">
   <!-- ====== STRATEGY RANKING WITH EXPANDABLE DETAILS ====== -->
-  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 持有N日收盘卖出 · 点击展开${dataSuff!=='ok'?' · ⚠️'+dLen+'天数据':''}</span></div><div style="overflow-x:auto"><table>
+  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 固定持有1/3/5日(参考) · 实际操作请看对决TP/SL${dataSuff!=='ok'?' · ⚠️'+dLen+'天数据':''}</span></div><div style="overflow-x:auto"><table>
     <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>盘中↓</th><th>今</th></tr></thead>
     <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0,amx:0,amd:0},h5=r.hr[5]||{wr:0,ar:0};
       const detailId='sd'+i;
@@ -1314,46 +1314,62 @@ function go(data,live){
     const teamA={name:'📐 指标派',desc:'RSI·MACD·BOLL·KDJ·BIAS·均线',color:'#5ba3ff',strategies:sr.filter(r=>['RSI','MACD','BOLL','均线','乖离率','KDJ'].includes(r.c))};
     const teamB={name:'🔨 形态派',desc:'K线形态·量价·组合策略',color:'#fb923c',strategies:sr.filter(r=>['K线','量价','组合'].includes(r.c))};
 
-    // Simulate sequential trading for each team
-    function simTeam(team,holdDays){
+    // Simulate sequential trading for each team — TP/SL exit (consistent with actual trading)
+    const compTP=autoTP,compSL=autoSL,compSLIP=0.001,compCOST=0.002;
+    function simTeam(team){
       let equity=10000,peak=10000,maxDD=0,trades=0,wins=0;
       const curve=[{d:data[0].d,eq:equity}];
       const tradeLog=[];
-      let holdUntil=-1;
+      let holding=false,entryP=0,entryIdx2=0,entryD='',entrySignal='';
       const MODE=PARAMS.entry_mode;
       for(let i=1;i<data.length;i++){
-        if(i<=holdUntil){curve.push({d:data[i].d,eq:equity});continue;}
-        let fired=null;
-        for(const s of team.strategies){
-          const sig=s.tr.find(t=>t.t==='B'&&t.i===i&&!t.filtered);
-          if(sig){fired={s,sig};break;}
-        }
-        if(fired){
-          let entryP,entryD=data[i].d;
-          if(MODE==='next_open'){
-            if(i+1>=data.length){curve.push({d:data[i].d,eq:equity});continue;}
-            entryP=data[i+1].o;holdUntil=i+1+holdDays;entryD=data[i+1].d;
-          }else if(MODE==='trigger'&&fired.s.e==='trigger'&&fired.sig.trigP){
-            entryP=fired.sig.trigP;holdUntil=i+holdDays;
-          }else{
-            entryP=data[i].c;holdUntil=i+holdDays;
+        if(!holding){
+          // Look for buy signal from any team strategy
+          let fired=null;
+          for(const s of team.strategies){
+            const sig=s.tr.find(t=>t.t==='B'&&t.i===i&&!t.filtered);
+            if(sig){fired={s,sig};break;}
           }
-          const exitIdx=Math.min(holdUntil,data.length-1);
-          const exitP=data[exitIdx].c;
-          const ret=(exitP-entryP)/entryP-0.002; // deduct costs
-          equity*=(1+ret);trades++;if(ret>0)wins++;
-          if(equity>peak)peak=equity;
-          const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
-          tradeLog.push({signal:fired.s.n,bd:entryD,sd:data[exitIdx].d,bp:entryP,sp:exitP,ret:ret*100,eq:equity});
+          if(fired){
+            entryD=data[i].d;entrySignal=fired.s.n;
+            if(MODE==='next_open'){
+              if(i+1>=data.length){curve.push({d:data[i].d,eq:equity});continue;}
+              entryP=data[i+1].o*(1+compSLIP);entryD=data[i+1].d;entryIdx2=i+1;
+            }else if(MODE==='trigger'&&fired.s.e==='trigger'&&fired.sig.trigP){
+              entryP=fired.sig.trigP*(1+compSLIP);entryIdx2=i;
+            }else{
+              entryP=data[i].c*(1+compSLIP);entryIdx2=i;
+            }
+            holding=true;
+          }
+        }else{
+          // Check TP/SL exit
+          const tpPrice=entryP*(1+compTP);
+          const slPrice=entryP*(1-compSL);
+          const hitTP=data[i].h>=tpPrice;
+          const hitSL=data[i].l<=slPrice;
+          let exitP=null,exitType='';
+          if(hitTP&&hitSL){exitP=slPrice*(1-compSLIP);exitType='❌SL同K';}
+          else if(hitTP){exitP=tpPrice*(1-compSLIP);exitType='✅TP';}
+          else if(hitSL){exitP=slPrice*(1-compSLIP);exitType='❌SL';}
+          // Max hold limit: 20 days forced exit
+          if(!exitP&&i-entryIdx2>=20){exitP=data[i].c*(1-compSLIP);exitType='⏰超时';}
+          if(exitP){
+            const ret=(exitP-entryP)/entryP-compCOST;
+            equity*=(1+ret);trades++;if(ret>0)wins++;
+            if(equity>peak)peak=equity;
+            const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
+            tradeLog.push({signal:entrySignal,bd:entryD,sd:data[i].d,bp:entryP,sp:exitP,ret:ret*100,eq:equity,exitType});
+            holding=false;
+          }
         }
         curve.push({d:data[i].d,eq:equity});
       }
       const totalRet=(equity/10000-1)*100;
-      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog};
+      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog,holding};
     }
 
-    const holdN=3; // competition uses 3-day holding
-    const rA=simTeam(teamA,holdN),rB=simTeam(teamB,holdN);
+    const rA=simTeam(teamA),rB=simTeam(teamB);
     const winner=rA.totalRet>rB.totalRet?'A':'B';
 
     // Build equity curve data for chart
@@ -1365,7 +1381,7 @@ function go(data,live){
 
     return`
   <div class="card" style="border-color:${winner==='A'?teamA.color:teamB.color}">
-    <div class="card-t">⚔️ 策略对决 <span style="font-size:10px;color:var(--dm);font-weight:400">持有${holdN}日 · 起始$10,000 · ${PARAMS.entry_mode==='trigger'?'盘中触发':'尾盘'}入场</span></div>
+    <div class="card-t">⚔️ 策略对决 <span style="font-size:10px;color:var(--dm);font-weight:400">TP${(compTP*100).toFixed(0)}%/SL${(compSL*100).toFixed(0)}% · 起始$10,000 · 悲观模式 · 含成本+滑点</span></div>
     <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px;padding:12px;border-radius:8px;background:${teamA.color}08;border:1px solid ${teamA.color}30">
         <div style="font-size:13px;font-weight:700;color:${teamA.color}">${teamA.name} ${winner==='A'?'🏆':''}</div>
@@ -1398,26 +1414,28 @@ function go(data,live){
     <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:280px">
         <div style="font-size:11px;font-weight:700;color:${teamA.color};margin-bottom:4px;cursor:pointer" onclick="document.getElementById('log-a').style.display=document.getElementById('log-a').style.display==='none'?'block':'none'">📐 指标派交易记录 (${rA.trades}笔) ▾</div>
-        <div id="log-a" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>损益</th></tr></thead><tbody>
+        <div id="log-a" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>退出</th><th>损益</th></tr></thead><tbody>
           ${rA.tradeLog.map(t=>`<tr>
             <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.signal}</td>
             <td class="mono" style="font-size:10px">${t.bd.slice(5)}</td>
             <td class="mono">${t.bp.toFixed(0)}</td>
             <td class="mono" style="font-size:10px">${t.sd.slice(5)}</td>
             <td class="mono">${t.sp.toFixed(0)}</td>
+            <td style="font-size:10px">${t.exitType||''}</td>
             <td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}; font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
           </tr>`).join('')}
         </tbody></table></div></div>
       </div>
       <div style="flex:1;min-width:280px">
         <div style="font-size:11px;font-weight:700;color:${teamB.color};margin-bottom:4px;cursor:pointer" onclick="document.getElementById('log-b').style.display=document.getElementById('log-b').style.display==='none'?'block':'none'">🔨 形态派交易记录 (${rB.trades}笔) ▾</div>
-        <div id="log-b" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>损益</th></tr></thead><tbody>
+        <div id="log-b" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>退出</th><th>损益</th></tr></thead><tbody>
           ${rB.tradeLog.map(t=>`<tr>
             <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.signal}</td>
             <td class="mono" style="font-size:10px">${t.bd.slice(5)}</td>
             <td class="mono">${t.bp.toFixed(0)}</td>
             <td class="mono" style="font-size:10px">${t.sd.slice(5)}</td>
             <td class="mono">${t.sp.toFixed(0)}</td>
+            <td style="font-size:10px">${t.exitType||''}</td>
             <td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}; font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
           </tr>`).join('')}
         </tbody></table></div></div>
@@ -1425,8 +1443,8 @@ function go(data,live){
     </div>
 
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      规则: 每队策略池共享信号 → 任一策略触发买入即开仓 → 持有${holdN}日收盘卖出 → 空仓等待下一信号 → 不重叠持仓<br>
-      同日多信号取第一个触发的 · 买入基准: B股(${PARAMS.entry_mode==='trigger'?'触发价/尾盘价':PARAMS.entry_mode==='next_open'?'T+1开盘价':'当日尾盘价'}) · 每笔全仓进出 · 点击队名展开交易记录
+      规则: 每队策略池共享信号 → 任一策略触发买入即开仓(含0.1%滑点) → 持有至 TP+${(compTP*100).toFixed(0)}%止盈 或 SL-${(compSL*100).toFixed(0)}%止损 先触发 → 最长持仓20天强制退出<br>
+      同K线TP+SL同时触及=悲观判SL · 含0.2%成本+0.1%滑点 · 趋势过滤:下降趋势跳过买入 · 点击队名展开交易记录
     </div>
   </div>`;
   })()}
@@ -1434,20 +1452,21 @@ function go(data,live){
   <div style="font-size:9px;color:var(--dm);text-align:center;padding:16px 0;border-top:1px solid var(--bd)">
     <div style="max-width:720px;margin:0 auto;text-align:left;line-height:1.6">
       <b style="color:var(--or)">⚠️ 系统盲区审计 + 风险警告</b><br><br>
-      <b style="color:var(--cy)">✅ 已修复的盲区:</b><br>
-      · <b>趋势过滤器</b> — 下降趋势(MA20下行+价格低于MA20)时，自动过滤所有买入信号，避免逆势抄底<br>
-      · <b>交易成本</b> — 每笔回测扣除0.2%成本(港股印花税0.13%+佣金)，回测结果更真实<br>
-      · <b>数据不足警告</b> — &lt;14天显示红色警告，14-30天显示黄色提醒<br><br>
-      <b style="color:var(--rd)">⚠️ 仍存在的盲区(请自行注意):</b><br>
-      · <b>只做多不做空</b> — 全部策略只找买点，下跌行情中最好的策略就是不买<br>
-      · <b>全仓进出</b> — 回测假设每次100%资金投入，实际应该分批建仓/减仓<br>
-      · <b>参数过拟合</b> — TP/SL参数搜索用同一段数据优化和测试，可能过度拟合历史<br>
-      · <b>无滑点模型</b> — 流通盘小的股票(如智谱H股仅8.5%)实际成交价可能远差于理论价<br>
-      · <b>无大盘过滤</b> — 恒指暴跌3%时所有股票跟跌，个股信号无效<br>
-      · <b>单K线TP/SL判定</b> — 同一根K线内TP和SL都触及时，假设TP先到（乐观偏差）<br>
-      · <b>次新股特殊性</b> — IPO不满一年的股票缺乏完整周期数据，回测不含熊市样本<br>
-      · <b>解禁事件</b> — 技术指标无法预判解禁抛压，需要配合基本面判断<br><br>
-      <b style="color:var(--dm)">系统信息:</b> ${STOCK_HK} · ${data.length}天数据 · ${live?lastFetchSrc||'在线':'离线'} · 趋势:${trendLabel} · 成本0.2%/笔
+      <b style="color:var(--cy)">✅ 已修复:</b><br>
+      · <b>趋势过滤器</b> — 下降趋势自动过滤买入(4个入口全统一)<br>
+      · <b>成本0.2% + 滑点0.1%</b> — 全模块统一扣除<br>
+      · <b>悲观同K判定</b> — TP+SL同触=判SL<br>
+      · <b>ATR自适应TP/SL</b> — 根据波动率自动建议<br>
+      · <b>过拟合检测</b> — 70/30分割验证<br>
+      · <b>TP/SL统一退出</b> — 对决+HF+持仓全用TP/SL(不再固定3天)<br>
+      · <b>20天强制退出</b> — 防无限持仓<br><br>
+      <b style="color:var(--rd)">⚠️ 仍存在:</b><br>
+      · <b>只做多</b> — 下跌最好不买(趋势过滤已挡大部分)<br>
+      · <b>全仓进出</b> — 实际应分批30-50%<br>
+      · <b>无大盘联动</b> — 恒指暴跌时信号失效<br>
+      · <b>次新股偏差</b> — 无熊市样本，结果打7折<br>
+      · <b>解禁事件</b> — 需配合基本面判断<br><br>
+      <b style="color:var(--dm)">系统:</b> ${STOCK_HK} · ${data.length}天 · ${live?lastFetchSrc||'在线':'离线'} · ${trendLabel} · TP${(autoTP*100).toFixed(0)}%/SL${(autoSL*100).toFixed(0)}% · 成本0.2%+滑点0.1%
     </div></div>`;
 
   setTimeout(()=>{drawChart(currentTF);drawEqChart();},80);
