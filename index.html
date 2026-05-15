@@ -807,7 +807,8 @@ function stBt(d,I){
       hr[n2]={ct, wr:ct?w/ct:0, ar:ct?tot/ct:0, amx:ct?totMx/ct:0, amd:ct?totMd/ct:0, details};
     });
     const li=d.length-1;
-    return{...s,tr,hr,bT:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B').length,entryType:s.e};
+    const trendOkNow=trendUp[li]!=='down';
+    return{...s,tr,hr,bT:s.b(li)&&trendOkNow,bTraw:s.b(li),sT:s.s(li),bc:tr.filter(t=>t.t==='B'&&!t.filtered).length,bcAll:tr.filter(t=>t.t==='B').length,entryType:s.e};
   });
 }
 
@@ -903,14 +904,13 @@ function go(data,live){
     ma5:I.m5[n],ma10:I.m10[n],ma20:I.m20[n],ma30:I.m30[n],kK:I.kd[n].k,kD:I.kd[n].d,kJ:I.kd[n].j,
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
   const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
-  // Trend state for display
+  // Trend state
   const maRising=cr.ma20&&I.m20[Math.max(n-5,0)]&&cr.ma20>I.m20[Math.max(n-5,0)];
   const aboveMA20=L.c>cr.ma20;
   const trendState=(!cr.ma20)?'unknown':(maRising&&aboveMA20)?'up':(!maRising&&!aboveMA20)?'down':'neutral';
   const trendLabel={up:'🟢 上升趋势',down:'🔴 下降趋势',neutral:'🟡 震荡/过渡',unknown:'⚪ 数据不足'}[trendState];
   const trendColor={up:'var(--gn)',down:'var(--rd)',neutral:'var(--yl)',unknown:'var(--dm)'}[trendState];
-  // Count filtered signals
-  const filteredBuys=R.reduce((c,r)=>c+r.tr.filter(t=>t.t==='B'&&t.filtered&&t.i===n).length,0);
+  const filteredBuys=R.filter(r=>r.bTraw&&!r.bT).length; // signals that fired but were filtered by trend
 
   // === Notify on new signals (only on refresh, not first load) ===
   if(live&&window._lastSignalCheck){
@@ -1325,7 +1325,7 @@ function go(data,live){
         if(i<=holdUntil){curve.push({d:data[i].d,eq:equity});continue;}
         let fired=null;
         for(const s of team.strategies){
-          const sig=s.tr.find(t=>t.t==='B'&&t.i===i);
+          const sig=s.tr.find(t=>t.t==='B'&&t.i===i&&!t.filtered);
           if(sig){fired={s,sig};break;}
         }
         if(fired){
