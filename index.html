@@ -1352,7 +1352,7 @@ function go(data,live){
       let equity=10000,peak=10000,maxDD=0,trades=0,wins=0;
       const curve=[{d:data[0].d,eq:equity}];
       const tradeLog=[];
-      let holding=false,entryP=0,entryIdx2=0,entryD='',entrySignal='',entryATR=0,entryTP=0,entrySL=0;
+      let holding=false,entryP=0,entryIdx2=0,entryD='',entrySignal='',entryATR=0,entryTP=0,entrySL=0,entryStrategy=null;
       const MODE=PARAMS.entry_mode;
       for(let i=1;i<data.length;i++){
         if(!holding){
@@ -1364,7 +1364,7 @@ function go(data,live){
             if(sig){fired={s,sig};break;}
           }
           if(fired){
-            entryD=data[i].d;entrySignal=fired.s.n;
+            entryD=data[i].d;entrySignal=fired.s.n;entryStrategy=fired.s;
             if(MODE==='next_open'){
               if(i+1>=data.length){curve.push({d:data[i].d,eq:equity});continue;}
               entryP=data[i+1].o*(1+SLIP_D);entryD=data[i+1].d;entryIdx2=i+1;
@@ -1382,10 +1382,15 @@ function go(data,live){
         }else{
           const hitTP=data[i].h>=entryTP;
           const hitSL=data[i].l<=entrySL;
+          // NEW: signal-reversal early exit — if the buying strategy's own sell
+          // signal fires while we hold, exit at close. Priority is below TP/SL
+          // so a clean TP/SL bar still wins. Matches the spec's b(i)/s(i) pairing.
+          const sigSells=entryStrategy&&entryStrategy.s&&entryStrategy.s(i);
           let exitP=null,exitType='';
           if(hitTP&&hitSL){exitP=entrySL*(1-SLIP_D);exitType='❌SL同K';}    // pessimistic tie
           else if(hitTP){exitP=entryTP*(1-SLIP_D);exitType='✅TP';}
           else if(hitSL){exitP=entrySL*(1-SLIP_D);exitType='❌SL';}
+          else if(sigSells){exitP=data[i].c*(1-SLIP_D);exitType='🔄反转';}
           if(!exitP&&i-entryIdx2>=MAX_HOLD){exitP=data[i].c*(1-SLIP_D);exitType='⏰超时';}
           if(exitP){
             const ret=(exitP-entryP)/entryP-COST_D;
@@ -1394,7 +1399,7 @@ function go(data,live){
             const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
             tradeLog.push({signal:entrySignal,bd:entryD,sd:data[i].d,bp:entryP,sp:exitP,ret:ret*100,eq:equity,exitType,
               tp:entryTP,sl:entrySL,atr:entryATR,tpPct:(entryTP/entryP-1)*100,slPct:(1-entrySL/entryP)*100});
-            holding=false;
+            holding=false;entryStrategy=null;
           }
         }
         curve.push({d:data[i].d,eq:equity});
@@ -1402,7 +1407,9 @@ function go(data,live){
       const totalRet=(equity/10000-1)*100;
       const avgTPpct=trades?tradeLog.reduce((s,t)=>s+t.tpPct,0)/trades:0;
       const avgSLpct=trades?tradeLog.reduce((s,t)=>s+t.slPct,0)/trades:0;
-      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog,holding,avgTPpct,avgSLpct};
+      // Exit-type breakdown for transparency
+      const exitMix={};tradeLog.forEach(t=>{const k=t.exitType||'?';exitMix[k]=(exitMix[k]||0)+1;});
+      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog,holding,avgTPpct,avgSLpct,exitMix};
     }
 
     const rA=simTeam(teamA),rB=simTeam(teamB);
@@ -1434,6 +1441,7 @@ function go(data,live){
           <div>最大回撤 <b class="mono" style="color:var(--rd)">${(rA.maxDD*100).toFixed(1)}%</b></div>
           <div>策略数 <b class="mono">${teamA.strategies.length}</b></div>
         </div>
+        <div style="margin-top:8px;font-size:10px;color:var(--dm);display:flex;flex-wrap:wrap;gap:6px">${Object.entries(rA.exitMix||{}).map(([k,v])=>`<span style="background:var(--c2);padding:1px 6px;border-radius:4px">${k} <b style="color:var(--tx)">${v}</b></span>`).join('')}</div>
       </div>
       <div style="flex:1;min-width:200px;padding:12px;border-radius:8px;background:${teamB.color}08;border:1px solid ${teamB.color}30">
         <div style="font-size:13px;font-weight:700;color:${teamB.color}">${teamB.name} ${winner==='B'?'🏆':''}</div>
@@ -1446,6 +1454,7 @@ function go(data,live){
           <div>最大回撤 <b class="mono" style="color:var(--rd)">${(rB.maxDD*100).toFixed(1)}%</b></div>
           <div>策略数 <b class="mono">${teamB.strategies.length}</b></div>
         </div>
+        <div style="margin-top:8px;font-size:10px;color:var(--dm);display:flex;flex-wrap:wrap;gap:6px">${Object.entries(rB.exitMix||{}).map(([k,v])=>`<span style="background:var(--c2);padding:1px 6px;border-radius:4px">${k} <b style="color:var(--tx)">${v}</b></span>`).join('')}</div>
       </div>
     </div>
     <div style="font-size:10px;color:var(--dm);margin-bottom:6px">累计权益曲线 (起始 $10,000)</div>
@@ -1485,8 +1494,8 @@ function go(data,live){
     </div>
 
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      规则: 任一策略触发→开仓(滑点+0.1%) → 持有至 <b>每笔自己的</b> TP(买入价 + 2×当日ATR) 或 SL(买入价 - 1.5×当日ATR) → 最长20天退出<br>
-      悲观同K判定SL优先 · 成本0.2% · 趋势过滤(MA20下行不买) · 列均TP+${(compTP*100).toFixed(1)}%/SL-${(compSL*100).toFixed(1)}% (波动大时自动放宽) · 点击队名展开
+      规则: 任一策略触发→开仓(滑点+0.1%) → 持有至 <b>每笔自己的</b> TP(买入价+2×当日ATR) / SL(买入价-1.5×当日ATR) / <b>🔄信号反转</b>(买入策略的s(i)触发收盘出) / 20天超时<br>
+      悲观同K SL优先 · 成本0.2% · 趋势过滤(MA20下行不买) · 列均TP+${(compTP*100).toFixed(1)}%/SL-${(compSL*100).toFixed(1)}% · 退出类型计数显示在队伍卡片
     </div>
   </div>`;
   })()}
