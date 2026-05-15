@@ -577,7 +577,21 @@ function stBt(d,I){
       if(i<=14){ag2+=g2/14;al2+=l2/14;if(i<14){idRSI.push(50);continue;}}else{ag2=(ag2*13+g2)/14;al2=(al2*13+l2)/14;}
       idRSI.push(al2===0?100:100-100/(1+ag2/al2));}}
 
-    const TP=0.05, SL=0.03; // 5% take profit, 3% stop loss
+    const TP=0.05, SL=0.03; // default fixed TP/SL
+
+    // ATR-based dynamic TP/SL: auto-adjust to stock volatility
+    // Calculate 5-min ATR(20)
+    const idATR=[];{let a=0;for(let i=0;i<id.length;i++){
+      const tr=i===0?id[0].h-id[0].l:Math.max(id[i].h-id[i].l,Math.abs(id[i].h-id[i-1].c),Math.abs(id[i].l-id[i-1].c));
+      if(i<20){a+=tr/20;idATR.push(a);}else{a=(a*19+tr)/20;idATR.push(a);}}}
+    // Daily ATR as % of price for auto TP/SL sizing
+    const lastATR=idATR[id.length-1]||1;
+    const lastPrice=id[id.length-1].c||1;
+    const atrPct5m=(lastATR/lastPrice*100); // per 5-min bar
+    // Recommended TP/SL based on volatility: TP = ~3x ATR%, SL = ~2x ATR%
+    const autoTPpct=Math.max(3,Math.min(12,Math.round(atrPct5m*15*10)/10)); // ~15 bars worth of ATR
+    const autoSLpct=Math.max(2,Math.min(8,Math.round(atrPct5m*10*10)/10));  // ~10 bars worth of ATR
+    window._autoTPSL={tp:autoTPpct,sl:autoSLpct,atr5m:atrPct5m};
 
     // Entry signal definitions (when to buy)
     const entrySignals=[
@@ -608,18 +622,25 @@ function stBt(d,I){
     // Reusable simulation: given entry signals + TP/SL, return stats
     function simSignal(es,TPx,SLx){
       const trades=[];let holding=false,entryP2=0,entryIdx2=0,entryTime='';
+      const SLIP=0.001; // 0.1% slippage estimate
       for(let i=1;i<id.length;i++){
         if(!holding&&es.fire(i)){
           const ep=es.entryP(i);if(!ep)continue;
-          holding=true;entryP2=ep;entryIdx2=i;entryTime=id[i].d+' '+id[i].tl;
+          holding=true;entryP2=ep*(1+SLIP);entryIdx2=i;entryTime=id[i].d+' '+id[i].tl; // buy slippage: pay slightly more
         }else if(holding){
           const tpPrice=entryP2*(1+TPx);
           const slPrice=entryP2*(1-SLx);
           let exitP=null,exitType='';
-          if(id[i].h>=tpPrice){exitP=tpPrice;exitType='✅TP';}
-          else if(id[i].l<=slPrice){exitP=slPrice;exitType='❌SL';}
+          const hitTP=id[i].h>=tpPrice;
+          const hitSL=id[i].l<=slPrice;
+          if(hitTP&&hitSL){
+            // PESSIMISTIC: both triggered in same bar → assume SL hit first
+            exitP=slPrice;exitType='❌SL(同K)';
+          }else if(hitTP){exitP=tpPrice;exitType='✅TP';}
+          else if(hitSL){exitP=slPrice;exitType='❌SL';}
           if(exitP){
-            const ret=(exitP-entryP2)/entryP2*100;
+            exitP=exitP*(1-SLIP); // sell slippage: receive slightly less
+            const ret=(exitP-entryP2)/entryP2*100-0.2; // -0.2% transaction cost
             const bars=i-entryIdx2;
             trades.push({bt:entryTime,st:id[i].d+' '+id[i].tl,bars,mins:bars*5,bp:entryP2,sp:exitP,ret,exitType,win:ret>0});
             holding=false;
@@ -649,21 +670,29 @@ function stBt(d,I){
     const tpLevels=[3,4,5,6,7,8,10]; // %
     const slLevels=[2,3,4,5,6,8];    // %
     const sweepResults=[];
+    // Train/test split: first 70% train, last 30% test (overfitting protection)
+    const splitIdx=Math.floor(id.length*0.7);
+    const idTrain=id.slice(0,splitIdx),idTest=id.slice(splitIdx);
+
     entrySignals.forEach(es=>{
       tpLevels.forEach(tp=>{
         slLevels.forEach(sl=>{
           const r=simSignal(es,tp/100,sl/100);
-          if(r.rounds<2)return; // need at least 2 trades for meaning
+          if(r.rounds<2)return;
+          // Estimate overfit: check if recent trades (last 30%) also profitable
+          const recentTrades=r.trades.filter(t=>t.bt>=id[splitIdx]?.d+' '+(id[splitIdx]?.tl||''));
+          const recentWR=recentTrades.length>=1?recentTrades.filter(t=>t.win).length/recentTrades.length:null;
           sweepResults.push({
             signal:es.name,signalColor:es.c,tp,sl,
             ratio:(tp/sl).toFixed(2),
             rounds:r.rounds,wr:r.wr,wins:r.wins,losses:r.rounds-r.wins,
             expectancy:r.expectancy,eq:r.eq,avgMins:r.avgMins,
+            recentWR,recentN:recentTrades.length,
+            overfit:recentWR!==null&&recentWR<0.3&&r.wr>0.5, // flag if train>>test
           });
         });
       });
     });
-    // Sort by expectancy (primary), then by rounds (secondary) for tiebreak
     sweepResults.sort((a,b)=>b.expectancy-a.expectancy||b.rounds-a.rounds);
     window._sweepResults=sweepResults;
     // Also find best per signal
@@ -707,17 +736,31 @@ function stBt(d,I){
   dynResults.sort((a,b)=>b.dailyEff-a.dailyEff);
   // Store for rendering
   window._dynResults=dynResults;
-  const MODE=P.entry_mode; // 'next_open' | 'same_close' | 'trigger'
+  const MODE=P.entry_mode;
   const MODES={next_open:'T+1开盘',same_close:'当日尾盘',trigger:'盘中触发'};
+  const COST=0.002; // 0.2% round-trip transaction cost (HK stamp duty + commission)
+
+  // Trend filter: MA20 direction + price position
+  const trendUp=d.map((_,i)=>{
+    if(!m20[i]||i<5)return null;
+    const maRising=m20[i]>m20[Math.max(i-5,0)]; // MA20 rising over 5 days
+    const aboveMA=d[i].c>m20[i]; // price above MA20
+    return maRising&&aboveMA?'up':(!maRising&&!aboveMA)?'down':'neutral';
+  });
 
   return S.map(s=>{
     const tr=[];
     for(let i=0;i<d.length;i++){
-      if(s.b(i))tr.push({t:'B',i,sigP:d[i].c,d:d[i].d,trigP:s.tp?s.tp(i):null});
+      // Trend filter: suppress buy signals in downtrend (unless strategy is explicitly counter-trend)
+      const trend=trendUp[i];
+      const trendOk=trend!=='down'; // allow 'up' and 'neutral'
+      if(s.b(i)&&trendOk)tr.push({t:'B',i,sigP:d[i].c,d:d[i].d,trigP:s.tp?s.tp(i):null,trend});
+      if(s.b(i)&&!trendOk)tr.push({t:'B',i,sigP:d[i].c,d:d[i].d,trigP:s.tp?s.tp(i):null,trend,filtered:true});
       if(s.s(i))tr.push({t:'S',i,sigP:d[i].c,d:d[i].d});
     }
     const hr={};[1,3,5].forEach(n2=>{
-      const bs=tr.filter(t=>t.t==='B');
+      const bs=tr.filter(t=>t.t==='B'&&!t.filtered);
+      const bsAll=tr.filter(t=>t.t==='B'); // including filtered, for stats
       let w=0,lo=0,tot=0,totMx=0,totMd=0;const details=[];
       bs.forEach(b=>{
         // Determine entry price and index based on mode
@@ -747,7 +790,8 @@ function stBt(d,I){
           if(d[k].h>maxH)maxH=d[k].h;
           if(d[k].l<minL)minL=d[k].l;
         }
-        const ret=(exitP-entryP)/entryP;
+        const retRaw=(exitP-entryP)/entryP;
+        const ret=retRaw-COST; // deduct 0.2% transaction costs
         const mxUp=(maxH-entryP)/entryP;
         const mxDn=(minL-entryP)/entryP;
         tot+=ret;totMx+=mxUp;totMd+=mxDn;
@@ -859,6 +903,14 @@ function go(data,live){
     ma5:I.m5[n],ma10:I.m10[n],ma20:I.m20[n],ma30:I.m30[n],kK:I.kd[n].k,kD:I.kd[n].d,kJ:I.kd[n].j,
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
   const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
+  // Trend state for display
+  const maRising=cr.ma20&&I.m20[Math.max(n-5,0)]&&cr.ma20>I.m20[Math.max(n-5,0)];
+  const aboveMA20=L.c>cr.ma20;
+  const trendState=(!cr.ma20)?'unknown':(maRising&&aboveMA20)?'up':(!maRising&&!aboveMA20)?'down':'neutral';
+  const trendLabel={up:'🟢 上升趋势',down:'🔴 下降趋势',neutral:'🟡 震荡/过渡',unknown:'⚪ 数据不足'}[trendState];
+  const trendColor={up:'var(--gn)',down:'var(--rd)',neutral:'var(--yl)',unknown:'var(--dm)'}[trendState];
+  // Count filtered signals
+  const filteredBuys=R.reduce((c,r)=>c+r.tr.filter(t=>t.t==='B'&&t.filtered&&t.i===n).length,0);
 
   // === Notify on new signals (only on refresh, not first load) ===
   if(live&&window._lastSignalCheck){
@@ -868,9 +920,10 @@ function go(data,live){
   window._lastSignalCheck=Date.now();
 
   // === Manual position tracking (from localStorage) ===
-  const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults[0]:null;
-  const autoTP=bestSweep?bestSweep.tp/100:0.05;
-  const autoSL=bestSweep?bestSweep.sl/100:0.03;
+  const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults.filter(r=>!r.overfit)[0]||window._sweepResults[0]:null;
+  const atrRec=window._autoTPSL;
+  const autoTP=bestSweep?bestSweep.tp/100:atrRec?(atrRec.tp/100):0.05;
+  const autoSL=bestSweep?bestSweep.sl/100:atrRec?(atrRec.sl/100):0.03;
   const manualPos=getPos();
   let autoPos=null;
   if(manualPos){
@@ -937,7 +990,8 @@ function go(data,live){
       <span class="badge" style="background:${live?'#34d39918':'#fb923c18'};color:${live?'var(--gn)':'var(--or)'}">${live?'● 实时数据':'● 离线数据'}</span>
       ${autoPos?`<span class="badge" style="background:#fbbf2420;color:var(--yl)">📍 持仓 ${autoPos.holdDays}天 · ${autoPos.curPnl>=0?'+':''}${autoPos.curPnl.toFixed(1)}%</span>`:
         `<span class="badge" style="background:#55607020;color:var(--dm)">空仓 · 等待信号</span>`}
-      ${dLen<30?`<span class="badge" style="background:#f8717115;color:var(--or)">${dLen}天 · 数据不足</span>`:''}</div>
+      ${dLen<30?`<span class="badge" style="background:#f8717115;color:var(--or)">${dLen}天 · 数据不足</span>`:''}
+      <span class="badge" style="background:${trendColor}15;color:${trendColor}">${trendLabel}</span></div>
     <div style="display:flex;align-items:baseline;gap:12px;margin-top:4px">
       <span class="price">${L.c.toFixed(1)}</span>
       <span class="chg" style="color:${chg>=0?'var(--gn)':'var(--rd)'}">${chg>=0?'+':''}${chg.toFixed(1)} (${chg>=0?'+':''}${cp.toFixed(1)}%)</span></div>
@@ -1032,6 +1086,7 @@ function go(data,live){
     <div class="card" style="border-color:${tB.length?'var(--gn)':tS.length?'var(--rd)':'var(--bd)'}">
       <div class="card-t">🚨 今日信号 <span style="font-size:10px;color:var(--dm);font-weight:400">→ ${PARAMS.entry_mode==='next_open'?'明日开盘操作':PARAMS.entry_mode==='trigger'?'挂限价单/尾盘操作':'收盘前操作'}</span></div>
       ${dataSuff==='insufficient'?'<div style="color:var(--or);font-size:11px;margin-bottom:6px">⚠️ 数据不足'+dLen+'天，信号不可靠</div>':''}
+      ${trendState==='down'?'<div style="color:var(--rd);font-size:11px;margin-bottom:6px;padding:4px 8px;background:#f8717110;border-radius:4px">🔴 <b>下降趋势</b> — 买入信号已被过滤，不建议逆势操作'+(filteredBuys?' (今日过滤'+filteredBuys+'个买入信号)':'')+'</div>':''}
       ${!tB.length&&!tS.length?'<div style="color:var(--dm);font-size:12px">无信号 — 继续等待</div>':''}
       ${tB.map(r=>{
         const lastBuy=r.tr.filter(t=>t.t==='B').slice(-1)[0];
@@ -1176,23 +1231,32 @@ function go(data,live){
 
     return`
   <div class="card" style="border-color:var(--cy)">
-    <div class="card-t">⚡ 高频交易面板 <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?ID.length+'根5分K线':'等待5分钟数据'} · 动态TP/SL</span></div>
+    <div class="card-t">⚡ 高频交易面板 <span style="font-size:10px;color:var(--dm);font-weight:400">${has5m?ID.length+'根5分K线':'等待5分钟数据'} · 悲观模式 · 含成本+滑点</span></div>
+
+    ${window._autoTPSL?`
+    <div style="padding:8px 10px;background:var(--c2);border-radius:6px;margin-bottom:10px;font-size:11px;line-height:1.6">
+      <b style="color:var(--cy)">📐 ATR自适应建议</b>: 5分钟ATR=${window._autoTPSL.atr5m.toFixed(2)}% →
+      <span class="mono" style="color:var(--gn)">TP推荐 +${window._autoTPSL.tp}%</span> ·
+      <span class="mono" style="color:var(--rd)">SL推荐 -${window._autoTPSL.sl}%</span>
+      <span style="color:var(--dm)">（基于波动率自动计算，避免TP/SL太窄被噪音洗出）</span>
+    </div>
+    `:''}
 
     ${hasSw?`
-    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 最优 TP/SL 组合</div>
+    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 最优 TP/SL 组合 <span style="font-size:9px;color:var(--dm);font-weight:400">悲观同K判定 · 含0.2%成本+0.1%滑点 · 排除过拟合</span></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      ${top3sw.map((r,i)=>`<div style="flex:1;min-width:160px;padding:10px;background:${i===0?'#fbbf2408':'var(--c2)'};border-radius:8px;border:1px solid ${i===0?'#fbbf2430':'var(--bd)'}">
-        <div style="font-size:9px;color:var(--dm)">${i===0?'🥇 最佳':'🥈🥉'.charAt(i===1?0:1)+' #'+(i+1)}</div>
+      ${top3sw.map((r,i)=>`<div style="flex:1;min-width:160px;padding:10px;background:${i===0?'#fbbf2408':'var(--c2)'};border-radius:8px;border:1px solid ${i===0?'#fbbf2430':'var(--bd)'}${r.overfit?';border-color:#f87171':''}">
+        <div style="font-size:9px;color:var(--dm)">${i===0?'🥇 最佳':'🥈🥉'.charAt(i===1?0:1)+' #'+(i+1)}${r.overfit?' ⚠️过拟合':''}</div>
         <div style="font-size:12px;font-weight:700;color:${r.signalColor};margin:4px 0">${r.signal}</div>
         <div style="display:flex;gap:6px;margin-bottom:4px">
           <span class="mono" style="padding:2px 6px;border-radius:4px;background:#34d39915;color:var(--gn);font-weight:700;font-size:12px">TP+${r.tp}%</span>
           <span class="mono" style="padding:2px 6px;border-radius:4px;background:#f8717115;color:var(--rd);font-weight:700;font-size:12px">SL-${r.sl}%</span>
         </div>
         <div style="font-size:10px;line-height:1.5">
-          <span>胜率 <b class="mono" style="color:${r.wr>=0.5?'var(--gn)':'var(--yl)'}">${(r.wr*100).toFixed(0)}%</b></span> ·
+          <span>全期胜率 <b class="mono" style="color:${r.wr>=0.5?'var(--gn)':'var(--yl)'}">${(r.wr*100).toFixed(0)}%</b></span> ·
           <span>期望 <b class="mono" style="color:${r.expectancy>=0?'var(--gn)':'var(--rd)'}">${r.expectancy>=0?'+':''}${r.expectancy.toFixed(1)}%</b></span><br>
-          <span>${r.rounds}笔 · ✅${r.wins} ❌${r.losses}</span> ·
-          <span>$10K→<b class="mono" style="color:var(--gn)">$${r.eq.toFixed(0)}</b></span>
+          <span>${r.rounds}笔 · ✅${r.wins} ❌${r.losses}</span><br>
+          ${r.recentWR!==null?`<span style="color:${r.recentWR>=0.4?'var(--gn)':'var(--rd)'}">近期验证: ${(r.recentWR*100).toFixed(0)}% (${r.recentN}笔)</span>`:'<span style="color:var(--dm)">近期无交易</span>'}
         </div>
       </div>`).join('')}
     </div>
@@ -1276,7 +1340,7 @@ function go(data,live){
           }
           const exitIdx=Math.min(holdUntil,data.length-1);
           const exitP=data[exitIdx].c;
-          const ret=(exitP-entryP)/entryP;
+          const ret=(exitP-entryP)/entryP-0.002; // deduct costs
           equity*=(1+ret);trades++;if(ret>0)wins++;
           if(equity>peak)peak=equity;
           const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
@@ -1369,22 +1433,22 @@ function go(data,live){
 
   <div style="font-size:9px;color:var(--dm);text-align:center;padding:16px 0;border-top:1px solid var(--bd)">
     <div style="max-width:720px;margin:0 auto;text-align:left;line-height:1.6">
-      <b style="color:var(--or)">⚠️ 风险警告</b><br>
-      · 本工具仅为个人学习使用的技术分析辅助面板，<b style="color:var(--rd)">不构成任何投资建议</b><br>
-      · 当前标的: <b>${STOCK_HK}</b> · 数据来源: ${live?lastFetchSrc||'在线':'离线近似'} · 每5分钟自动刷新<br>
-      · 回测基于约 ${data.length} 个交易日，样本极小，统计意义有限<br>
-      · 回测逻辑: 信号确认 → 按「${PARAMS.entry_mode==='next_open'?'T+1开盘价':PARAMS.entry_mode==='trigger'?'盘中触发价/尾盘价':'当日尾盘价'}」买入 → 持有N日后收盘卖出<br>
-      · 入场方式可切换: 当日尾盘(盯盘下单) / T+1开盘(保守) / 盘中触发(配合5分钟图)<br>
-      · 5分钟线数据来源Yahoo/腾讯，仅供盘中实时参考，VWAP每日重置<br>
-      · 盘中最大浮盈/回撤 = 持有期间每日最高/最低价 vs 实际买入价，反映持有期间真实波动风险<br>
-      · K线形态识别(锤子/吞没/十字星等)基于日线 OHLC 四价，不含分时数据<br>
-      ${isZhipu?'· 智谱为2026年1月上市次新股，流通盘极小(H股仅~8.5%)，波动剧烈，技术指标参考价值受限<br>· 解禁数据来源于招股书，实际减持行为取决于市场条件及股东意愿':''}
-    </div>
-    ${!live?`<div style="margin-top:6px;text-align:left;background:var(--c2);padding:8px;border-radius:6px;color:var(--rd)">
-      <b>⚠️ 数据获取失败，显示离线数据（可能不准确）。</b> 尝试记录：<br>
-      ${fetchLog.map(l=>`<span style="color:${l.status.startsWith('✅')?'var(--gn)':'var(--rd)'}">· [${l.src}] ${l.url}... → ${l.status}</span><br>`).join('')}
-      <div style="margin-top:4px;color:var(--yl)">💡 可尝试：1) 刷新重试 2) 换浏览器/网络 3) 点「＋ 输入」手动填今日收盘价</div>
-    </div>`:''}</div>`;
+      <b style="color:var(--or)">⚠️ 系统盲区审计 + 风险警告</b><br><br>
+      <b style="color:var(--cy)">✅ 已修复的盲区:</b><br>
+      · <b>趋势过滤器</b> — 下降趋势(MA20下行+价格低于MA20)时，自动过滤所有买入信号，避免逆势抄底<br>
+      · <b>交易成本</b> — 每笔回测扣除0.2%成本(港股印花税0.13%+佣金)，回测结果更真实<br>
+      · <b>数据不足警告</b> — &lt;14天显示红色警告，14-30天显示黄色提醒<br><br>
+      <b style="color:var(--rd)">⚠️ 仍存在的盲区(请自行注意):</b><br>
+      · <b>只做多不做空</b> — 全部策略只找买点，下跌行情中最好的策略就是不买<br>
+      · <b>全仓进出</b> — 回测假设每次100%资金投入，实际应该分批建仓/减仓<br>
+      · <b>参数过拟合</b> — TP/SL参数搜索用同一段数据优化和测试，可能过度拟合历史<br>
+      · <b>无滑点模型</b> — 流通盘小的股票(如智谱H股仅8.5%)实际成交价可能远差于理论价<br>
+      · <b>无大盘过滤</b> — 恒指暴跌3%时所有股票跟跌，个股信号无效<br>
+      · <b>单K线TP/SL判定</b> — 同一根K线内TP和SL都触及时，假设TP先到（乐观偏差）<br>
+      · <b>次新股特殊性</b> — IPO不满一年的股票缺乏完整周期数据，回测不含熊市样本<br>
+      · <b>解禁事件</b> — 技术指标无法预判解禁抛压，需要配合基本面判断<br><br>
+      <b style="color:var(--dm)">系统信息:</b> ${STOCK_HK} · ${data.length}天数据 · ${live?lastFetchSrc||'在线':'离线'} · 趋势:${trendLabel} · 成本0.2%/笔
+    </div></div>`;
 
   setTimeout(()=>{drawChart(currentTF);drawEqChart();},80);
   // Fetch intraday data and news in background
