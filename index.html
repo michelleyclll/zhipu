@@ -822,7 +822,25 @@ async function fetchNews(){
   el.innerHTML=`<div style="color:var(--dm);font-size:11px">动态新闻获取失败 (尝试${tried}次) <span style="font-size:9px">${lastErr}</span><br><span style="font-size:10px">CORS代理可能不可用 · 上方手动事件仍可参考</span></div>`;
 }
 
+// ====== Browser notification + sound alerts ======
+let _notifPermission='default';
+function initNotif(){if('Notification' in window)Notification.requestPermission().then(p=>{_notifPermission=p;});}
+function sendAlert(title,body){
+  // Sound beep
+  try{const ctx=new(window.AudioContext||window.webkitAudioContext)();const o=ctx.createOscillator();const g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);o.frequency.value=880;g.gain.value=0.3;o.start();o.stop(ctx.currentTime+0.15);
+    setTimeout(()=>{const o2=ctx.createOscillator();const g2=ctx.createGain();o2.connect(g2);g2.connect(ctx.destination);
+      o2.frequency.value=1100;g2.gain.value=0.3;o2.start();o2.stop(ctx.currentTime+0.2);},200);
+  }catch(e){}
+  // Browser notification
+  if(_notifPermission==='granted'){try{new Notification(title,{body,icon:'📊'});}catch(e){}}
+  // Also flash title
+  let c=0;const orig=document.title;const iv=setInterval(()=>{document.title=c%2?'🚨 '+title:orig;c++;if(c>10)clearInterval(iv);},500);
+}
+initNotif();
+
 function go(data,live){
+ try{ // <<<< wrap entire go() in try-catch
   D=data;const I=calc(data),R=stBt(data,I);
   const n=data.length-1,L=data[n],P=data[Math.max(n-1,0)],chg=L.c-P.c,cp=P.c?chg/P.c*100:0;
   // Data sufficiency check
@@ -842,6 +860,13 @@ function go(data,live){
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
   const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
 
+  // === Notify on new signals (only on refresh, not first load) ===
+  if(live&&window._lastSignalCheck){
+    if(tB.length)sendAlert(STOCK_HK+' 买入信号!',tB.map(r=>r.n).join(', '));
+    if(tS.length)sendAlert(STOCK_HK+' 卖出信号!',tS.map(r=>r.n).join(', '));
+  }
+  window._lastSignalCheck=Date.now();
+
   // === Manual position tracking (from localStorage) ===
   const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults[0]:null;
   const autoTP=bestSweep?bestSweep.tp/100:0.05;
@@ -857,6 +882,9 @@ function go(data,live){
     const holdDays2=entryIdx>=0?data.length-1-entryIdx:0;
     autoPos={holding:true,signal:manualPos.note||'手动记录',entryDate:manualPos.date,entryP:ep,
       tpTarget,slTarget,curPnl,holdDays:holdDays2,tpPct:(autoTP*100),slPct:(autoSL*100)};
+    // Alert on TP/SL breach
+    if(live&&curPnl<=-autoSL*100)sendAlert('🚨 '+STOCK_HK+' 触发止损!','现价'+L.c.toFixed(0)+' 亏损'+curPnl.toFixed(1)+'% 止损线:'+slTarget.toFixed(0));
+    if(live&&curPnl>=autoTP*100)sendAlert('🎯 '+STOCK_HK+' 达到止盈!','现价'+L.c.toFixed(0)+' 盈利'+curPnl.toFixed(1)+'% 止盈线:'+tpTarget.toFixed(0));
   }
   const bt=cr.ma5?(cr.ma5*.92).toFixed(0):'—';
   const evts=STOCK_CODE==='2513'?NW.filter(e=>data.some(d=>d.d===e.d)):[];
@@ -919,7 +947,7 @@ function go(data,live){
   </div>
   <div style="display:flex;gap:6px;align-items:center">
     <span id="refresh-lbl" class="mono" style="font-size:10px;color:var(--dm)">5:00</span>
-    <button class="btn bp" onclick="document.getElementById('ap').style.display=document.getElementById('ap').style.display==='none'?'block':'none'">＋ 输入</button>
+    <button class="btn" style="background:${_notifPermission==='granted'?'#34d39920':'#fbbf2420'};color:${_notifPermission==='granted'?'var(--gn)':'var(--yl)'};font-size:10px;padding:4px 8px" onclick="initNotif();this.textContent='✓ 已开启';this.style.color='var(--gn)'">${_notifPermission==='granted'?'🔔 通知ON':'🔔 开启通知'}</button>
     <button class="btn bg" onclick="rl()">🔄</button></div></div>
 
   <div id="ap" style="display:none" class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -1226,21 +1254,21 @@ function go(data,live){
     function simTeam(team,holdDays){
       let equity=10000,peak=10000,maxDD=0,trades=0,wins=0;
       const curve=[{d:data[0].d,eq:equity}];
+      const tradeLog=[];
       let holdUntil=-1;
       const MODE=PARAMS.entry_mode;
       for(let i=1;i<data.length;i++){
         if(i<=holdUntil){curve.push({d:data[i].d,eq:equity});continue;}
-        // Check if any team strategy fires buy
         let fired=null;
         for(const s of team.strategies){
           const sig=s.tr.find(t=>t.t==='B'&&t.i===i);
           if(sig){fired={s,sig};break;}
         }
         if(fired){
-          let entryP;
+          let entryP,entryD=data[i].d;
           if(MODE==='next_open'){
             if(i+1>=data.length){curve.push({d:data[i].d,eq:equity});continue;}
-            entryP=data[i+1].o;holdUntil=i+1+holdDays;
+            entryP=data[i+1].o;holdUntil=i+1+holdDays;entryD=data[i+1].d;
           }else if(MODE==='trigger'&&fired.s.e==='trigger'&&fired.sig.trigP){
             entryP=fired.sig.trigP;holdUntil=i+holdDays;
           }else{
@@ -1252,11 +1280,12 @@ function go(data,live){
           equity*=(1+ret);trades++;if(ret>0)wins++;
           if(equity>peak)peak=equity;
           const dd=(peak-equity)/peak;if(dd>maxDD)maxDD=dd;
+          tradeLog.push({signal:fired.s.n,bd:entryD,sd:data[exitIdx].d,bp:entryP,sp:exitP,ret:ret*100,eq:equity});
         }
         curve.push({d:data[i].d,eq:equity});
       }
       const totalRet=(equity/10000-1)*100;
-      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD};
+      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog};
     }
 
     const holdN=3; // competition uses 3-day holding
@@ -1301,9 +1330,39 @@ function go(data,live){
     </div>
     <div style="font-size:10px;color:var(--dm);margin-bottom:6px">累计权益曲线 (起始 $10,000)</div>
     <div style="height:200px;position:relative"><canvas id="c-eq"></canvas></div>
+
+    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <div style="font-size:11px;font-weight:700;color:${teamA.color};margin-bottom:4px;cursor:pointer" onclick="document.getElementById('log-a').style.display=document.getElementById('log-a').style.display==='none'?'block':'none'">📐 指标派交易记录 (${rA.trades}笔) ▾</div>
+        <div id="log-a" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>损益</th></tr></thead><tbody>
+          ${rA.tradeLog.map(t=>`<tr>
+            <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.signal}</td>
+            <td class="mono" style="font-size:10px">${t.bd.slice(5)}</td>
+            <td class="mono">${t.bp.toFixed(0)}</td>
+            <td class="mono" style="font-size:10px">${t.sd.slice(5)}</td>
+            <td class="mono">${t.sp.toFixed(0)}</td>
+            <td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}; font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
+          </tr>`).join('')}
+        </tbody></table></div></div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div style="font-size:11px;font-weight:700;color:${teamB.color};margin-bottom:4px;cursor:pointer" onclick="document.getElementById('log-b').style.display=document.getElementById('log-b').style.display==='none'?'block':'none'">🔨 形态派交易记录 (${rB.trades}笔) ▾</div>
+        <div id="log-b" style="display:none"><div class="trade-list" style="max-height:200px"><table style="width:100%"><thead><tr><th>信号</th><th>买入</th><th>买价</th><th>卖出</th><th>卖价</th><th>损益</th></tr></thead><tbody>
+          ${rB.tradeLog.map(t=>`<tr>
+            <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.signal}</td>
+            <td class="mono" style="font-size:10px">${t.bd.slice(5)}</td>
+            <td class="mono">${t.bp.toFixed(0)}</td>
+            <td class="mono" style="font-size:10px">${t.sd.slice(5)}</td>
+            <td class="mono">${t.sp.toFixed(0)}</td>
+            <td class="mono" style="color:${t.ret>=0?'var(--gn)':'var(--rd)'}; font-weight:700">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</td>
+          </tr>`).join('')}
+        </tbody></table></div></div>
+      </div>
+    </div>
+
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
       规则: 每队策略池共享信号 → 任一策略触发买入即开仓 → 持有${holdN}日收盘卖出 → 空仓等待下一信号 → 不重叠持仓<br>
-      同日多信号取第一个触发的 · 买入基准: B股(${PARAMS.entry_mode==='trigger'?'触发价/尾盘价':PARAMS.entry_mode==='next_open'?'T+1开盘价':'当日尾盘价'}) · 每笔全仓进出
+      同日多信号取第一个触发的 · 买入基准: B股(${PARAMS.entry_mode==='trigger'?'触发价/尾盘价':PARAMS.entry_mode==='next_open'?'T+1开盘价':'当日尾盘价'}) · 每笔全仓进出 · 点击队名展开交易记录
     </div>
   </div>`;
   })()}
@@ -1337,6 +1396,24 @@ function go(data,live){
   }
   fetchNews();
   startAutoRefresh();
+ }catch(err){ // <<<< catch go() errors
+   console.error('go() error:',err);
+   document.getElementById('app').innerHTML=`
+   <div class="hdr"><div>
+     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+       <div style="display:flex;align-items:center;gap:6px">
+         <input class="stk-input" id="stk-in" value="${STOCK_CODE}" onkeydown="if(event.key==='Enter')setStock(this.value)">
+         <button class="stk-go" onclick="setStock(document.getElementById('stk-in').value)">.HK</button></div>
+       <h1>${STOCK_HK}</h1></div></div>
+     <div style="display:flex;gap:6px"><button class="btn bg" onclick="rl()">🔄 重新加载</button>
+       <span id="refresh-lbl" class="mono" style="font-size:10px;color:var(--dm)">5:00</span></div></div>
+   <div class="refresh-bar"><div class="refresh-fill"></div></div>
+   <div class="card" style="border-color:var(--rd);margin-top:12px">
+     <div style="font-size:12px;color:var(--or)">⚠️ 页面渲染出错，但数据已获取(${D.length}天)。自动刷新仍在运行。</div>
+     <div style="font-size:10px;color:var(--dm);margin-top:6px;word-break:break-all">${err.message}</div>
+   </div>`;
+   startAutoRefresh();
+ }
 }
 
 function toggleDetail(id,row){
