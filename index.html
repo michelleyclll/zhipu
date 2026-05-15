@@ -923,8 +923,9 @@ function go(data,live){
   // === Manual position tracking (from localStorage) ===
   const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults.filter(r=>!r.overfit)[0]||window._sweepResults[0]:null;
   const atrRec=window._autoTPSL;
-  const autoTP=bestSweep?bestSweep.tp/100:atrRec?(atrRec.tp/100):0.05;
-  const autoSL=bestSweep?bestSweep.sl/100:atrRec?(atrRec.sl/100):0.03;
+  // ATR is PRIMARY (real volatility math), sweep is validation reference only
+  const autoTP=atrRec?(atrRec.tp/100):0.08;
+  const autoSL=atrRec?(atrRec.sl/100):0.05;
   const manualPos=getPos();
   let autoPos=null;
   if(manualPos){
@@ -1126,7 +1127,7 @@ function go(data,live){
           <input type="date" id="pos-date" value="${L.d}" style="width:130px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 8px;color:var(--tx);font-size:12px"></div>
         <button class="btn" style="background:var(--gn);color:#000;padding:6px 16px;font-size:12px;font-weight:700" onclick="const p=document.getElementById('pos-price').value;const d=document.getElementById('pos-date').value;if(!p)return alert('请输入买入价');setPos(p,d)">记录买入</button>
       </div>
-      <div style="font-size:9px;color:var(--dm);margin-top:6px">TP/SL参数来自最优搜索: TP+${(autoTP*100).toFixed(0)}% / SL-${(autoSL*100).toFixed(0)}%</div>
+      <div style="font-size:9px;color:var(--dm);margin-top:6px">TP/SL来自ATR自适应: TP+${(autoTP*100).toFixed(1)}% / SL-${(autoSL*100).toFixed(1)}%</div>
       `}
     </div><div class="card"><div class="card-t">📊 指标</div><div class="igrid">
       <div class="ibox"><div class="l">RSI${PARAMS.rsi_period}</div><div class="v" style="color:${cr.r>70?'var(--rd)':cr.r<30?'var(--gn)':'var(--yl)'}">${cr.r.toFixed(1)}</div><div class="n">${cr.r>75?'🔴强超买':cr.r>70?'⚠️超买':cr.r<30?'💚超卖':''}</div></div>
@@ -1244,7 +1245,7 @@ function go(data,live){
     `:''}
 
     ${hasSw?`
-    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 最优 TP/SL 组合 <span style="font-size:9px;color:var(--dm);font-weight:400">悲观同K判定 · 含0.2%成本+0.1%滑点 · 排除过拟合</span></div>
+    <div style="font-size:11px;font-weight:700;color:var(--yl);margin-bottom:6px">🎯 TP/SL 参数验证 <span style="font-size:9px;color:var(--dm);font-weight:400">sweep搜索 · ATR建议为主 · 以下为历史验证参考</span></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       ${top3sw.map((r,i)=>`<div style="flex:1;min-width:160px;padding:10px;background:${i===0?'#fbbf2408':'var(--c2)'};border-radius:8px;border:1px solid ${i===0?'#fbbf2430':'var(--bd)'}${r.overfit?';border-color:#f87171':''}">
         <div style="font-size:9px;color:var(--dm)">${i===0?'🥇 最佳':'🥈🥉'.charAt(i===1?0:1)+' #'+(i+1)}${r.overfit?' ⚠️过拟合':''}</div>
@@ -1382,7 +1383,7 @@ function go(data,live){
 
     return`
   <div class="card" style="border-color:${winner==='A'?teamA.color:teamB.color}">
-    <div class="card-t">⚔️ 策略对决 <span style="font-size:10px;color:var(--dm);font-weight:400">TP${(compTP*100).toFixed(0)}%/SL${(compSL*100).toFixed(0)}% · 起始$10,000 · 悲观模式 · 含成本+滑点</span></div>
+    <div class="card-t">⚔️ 策略对决 <span style="font-size:10px;color:var(--dm);font-weight:400">ATR自适应 TP${(compTP*100).toFixed(1)}%/SL${(compSL*100).toFixed(1)}% · 起始$10,000 · 悲观模式</span></div>
     <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px;padding:12px;border-radius:8px;background:${teamA.color}08;border:1px solid ${teamA.color}30">
         <div style="font-size:13px;font-weight:700;color:${teamA.color}">${teamA.name} ${winner==='A'?'🏆':''}</div>
@@ -1444,8 +1445,8 @@ function go(data,live){
     </div>
 
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      规则: 每队策略池共享信号 → 任一策略触发买入即开仓(含0.1%滑点) → 持有至 TP+${(compTP*100).toFixed(0)}%止盈 或 SL-${(compSL*100).toFixed(0)}%止损 先触发 → 最长持仓20天强制退出<br>
-      同K线TP+SL同时触及=悲观判SL · 含0.2%成本+0.1%滑点 · 趋势过滤:下降趋势跳过买入 · 点击队名展开交易记录
+      规则: 任一策略触发→开仓(含滑点) → 持有至 ATR自适应TP+${(compTP*100).toFixed(1)}%止盈 或 SL-${(compSL*100).toFixed(1)}%止损 → 最长20天退出<br>
+      悲观同K判定 · 0.2%成本+0.1%滑点 · 趋势过滤 · TP/SL来自5分钟ATR波动率(非固定值) · 点击队名展开
     </div>
   </div>`;
   })()}
