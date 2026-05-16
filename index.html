@@ -1572,12 +1572,39 @@ function go(data,live){
     const top=robust.slice(0,6);
     const overfit=scored.filter(c=>c.train.n>=2&&c.test.n>=1&&c.train.totalRet>5&&c.test.totalRet<-5).length;
     const totalTested=scored.filter(c=>c.full.n>0).length;
+    // Sample-size honesty: if test set < 60 days OR no strategy has ≥3 test trades, flag as untrustworthy
+    const testDays=data.length-Math.floor(data.length*0.7);
+    const maxTestTrades=Math.max(0,...scored.map(c=>c.test.n));
+    const sampleSizeOK=testDays>=60&&maxTestTrades>=3;
+    // === Cross-stock memory ===
+    // Persist this stock's passers; tally up which strategies have passed on multiple stocks
+    try{
+      const passKey='wp_pass_'+STOCK_CODE;
+      const passList=robust.map(c=>c.s.n);
+      if(sampleSizeOK)localStorage.setItem(passKey,JSON.stringify(passList)); // only count if sample healthy
+      else localStorage.removeItem(passKey); // don't pollute the vote with small-sample noise
+    }catch(e){}
+    const crossVotes={};
+    try{
+      Object.keys(localStorage).filter(k=>k.startsWith('wp_pass_')).forEach(k=>{
+        const code=k.slice('wp_pass_'.length);
+        const list=JSON.parse(localStorage.getItem(k)||'[]');
+        list.forEach(name=>{
+          if(!crossVotes[name])crossVotes[name]=new Set();
+          crossVotes[name].add(code);
+        });
+      });
+    }catch(e){}
+    const crossChamps=Object.entries(crossVotes).map(([n,codes])=>({n,codes:[...codes],count:codes.size})).filter(c=>c.count>=2).sort((a,b)=>b.count-a.count);
+    const allViewedStocks=new Set();
+    try{Object.keys(localStorage).filter(k=>k.startsWith('wp_pass_')).forEach(k=>allViewedStocks.add(k.slice('wp_pass_'.length)));}catch(e){}
     return`
   <div class="card" style="border-color:var(--yl);background:linear-gradient(180deg,#fbbf2406,var(--c1))">
     <div class="card-t" style="color:var(--yl)">🤖 王者自选队 <span style="font-size:10px;color:var(--dm);font-weight:400">扫 ${totalTested} 策略 · 70/30 训练/测试分割 · 仅留两边都正期望的 → 抗过拟合</span></div>
     <div style="font-size:11px;color:var(--dm);margin-bottom:10px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      训练集 ${data[0].d.slice(5)}~${splitDate.slice(5)} · 测试集 ${splitDate.slice(5)}~${data[data.length-1].d.slice(5)}（${data.length-Math.floor(data.length*0.7)}天）<br>
-      共 ${scored.filter(c=>c.full.n>0).length} 策略产生过交易 → ${robust.length} 通过两边正期望验证 → 选前 ${top.length}名 · 过拟合淘汰 ${overfit} 个
+      训练集 ${data[0].d.slice(5)}~${splitDate.slice(5)} · 测试集 ${splitDate.slice(5)}~${data[data.length-1].d.slice(5)}（${testDays}天）<br>
+      共 ${totalTested} 策略产生过交易 → ${robust.length} 通过两边正期望验证 → 选前 ${top.length}名 · 过拟合淘汰 ${overfit} 个
+      ${!sampleSizeOK?`<br><b style="color:var(--rd)">⚠️ 测试集太小</b> (${testDays}天/${maxTestTrades}笔最多) — 通过验证的策略不计入跨股票冠军投票`:''}
     </div>
     ${top.length===0?`<div style="padding:16px;text-align:center;color:var(--rd);font-size:12px">⚠️ 当前股票<b>没有</b>策略能通过 70/30 验证 — 任何看到的胜率都可能是过拟合，建议观望或换股票</div>`:`
     <div style="overflow-x:auto"><table>
@@ -1587,9 +1614,13 @@ function go(data,live){
         ${top.map((c,i)=>{
           const exitMix={};c.trades.forEach(t=>{exitMix[t.exitType]=(exitMix[t.exitType]||0)+1;});
           const mixStr=Object.entries(exitMix).map(([k,v])=>k+v).join('·');
+          // Cross-stock badge — does this name show up in localStorage from other stocks too?
+          const vote=crossVotes[c.s.n];
+          const otherStocks=vote?[...vote].filter(s=>s!==STOCK_CODE):[];
+          const crossBadge=otherStocks.length?`<span style="margin-left:6px;font-size:9px;padding:1px 5px;border-radius:3px;background:#a78bfa20;color:var(--pu)" title="也在这些股票通过验证: ${otherStocks.join(', ')}">🌐 ×${otherStocks.length+1}</span>`:'';
           return`<tr style="${i===0?'background:#fbbf2410':''}">
             <td><b style="color:${i===0?'var(--yl)':'var(--tx)'}">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'#'+(i+1)}</b></td>
-            <td><b style="font-size:11px">${c.s.n}</b><br><span style="font-size:9px;color:var(--dm)">${c.s.c} · ${c.s.e==='trigger'?'盘中触发':c.s.e==='next_open'?'T+1开':'尾盘'} · ${mixStr}</span></td>
+            <td><b style="font-size:11px">${c.s.n}</b>${crossBadge}<br><span style="font-size:9px;color:var(--dm)">${c.s.c} · ${c.s.e==='trigger'?'盘中触发':c.s.e==='next_open'?'T+1开':'尾盘'} · ${mixStr}</span></td>
             <td class="mono">${c.train.n}</td>
             <td class="mono" style="color:${c.train.wr>=.5?'var(--gn)':'var(--yl)'}">${(c.train.wr*100).toFixed(0)}%</td>
             <td class="mono" style="color:var(--gn)">+${c.train.totalRet.toFixed(1)}%</td>
@@ -1601,9 +1632,29 @@ function go(data,live){
         }).join('')}
       </tbody>
     </table></div>
+    ${crossChamps.length?`
+    <div style="margin-top:12px;padding:10px;background:linear-gradient(135deg,#a78bfa12,#fbbf2408);border-radius:8px;border:1px solid #a78bfa40">
+      <div style="font-size:12px;font-weight:700;color:var(--pu);margin-bottom:8px">🏅 跨股票冠军 <span style="font-size:10px;color:var(--dm);font-weight:400">· 你浏览过 ${allViewedStocks.size} 只股票，以下策略在 ≥2 只都通过 70/30 验证 → 真 alpha 候选</span></div>
+      ${crossChamps.map(c=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:11px;border-bottom:1px solid #a78bfa15">
+          <span><b style="color:var(--tx)">${c.n}</b></span>
+          <span class="mono" style="color:var(--pu)">${c.count}/${allViewedStocks.size} 通过 · ${c.codes.map(x=>x+'.HK').join(', ')}</span>
+        </div>
+      `).join('')}
+      <div style="font-size:9px;color:var(--dm);margin-top:6px">规则: 测试集 ≥60 天且 ≥3 笔交易才计入投票 (避免小样本污染) · 切换股票后自动累积 · 清缓存可重置</div>
+    </div>
+    `:allViewedStocks.size>=2?`
+    <div style="margin-top:12px;padding:8px 10px;background:var(--c2);border-radius:6px;font-size:10px;color:var(--dm)">
+      🏅 跨股票冠军暂无 — 你已浏览 ${allViewedStocks.size} 只股票 (${[...allViewedStocks].map(x=>x+'.HK').join(', ')})，但没有策略在 ≥2 只都通过验证。继续浏览更多股票来累积证据。
+    </div>
+    `:`
+    <div style="margin-top:12px;padding:8px 10px;background:var(--c2);border-radius:6px;font-size:10px;color:var(--dm)">
+      🏅 浏览 ≥2 只健康样本的股票后会显示跨股票冠军 (当前只看了 ${allViewedStocks.size} 只)
+    </div>
+    `}
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px;line-height:1.6">
       <b style="color:var(--yl)">🎯 怎么用</b>：这里列出的策略是 <b>系统自己挑出来的</b>，不是预设的。<b>训练集只用前 70% 数据</b>找候选，<b>必须在没见过的后 30% 测试集</b>也正期望才入选 — 这是反过拟合最基本的方法。<br>
-      过拟合警告: ${overfit?`检测到 <b style="color:var(--rd)">${overfit} 个</b>策略训练集好但测试集翻车 (已淘汰)`:'当前股票样本健康'} · 排序依据: 测试集期望值 (每笔预期回报)
+      过拟合警告: ${overfit?`检测到 <b style="color:var(--rd)">${overfit} 个</b>策略训练集好但测试集翻车 (已淘汰)`:'当前股票样本健康'} · 排序依据: 测试集期望值 (每笔预期回报) · 🌐徽章 = 跨股票通过次数
     </div>
     `}
   </div>`;
