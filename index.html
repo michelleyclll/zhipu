@@ -117,6 +117,21 @@ function setPos(price,date,note){
 function clearPos(){
   localStorage.removeItem('pos_'+STOCK_CODE);rl(true);
 }
+// === Signal-log helpers (called from button onclick) ===
+function dumpSigLog(code){
+  const log=JSON.parse(localStorage.getItem('wp_siglog_'+code)||'[]');
+  const blob=new Blob([JSON.stringify(log,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=u;a.download='siglog_'+code+'_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();URL.revokeObjectURL(u);
+}
+function clearSigLog(code){
+  if(!confirm('清空 '+code+'.HK 的信号日志？'))return;
+  localStorage.removeItem('wp_siglog_'+code);
+  localStorage.removeItem('wp_siglog_active_'+code);
+  rl(true);
+}
 
 const NW=[
   {d:'2026-01-08',t:'IPO上市116.2',p:'n'},{d:'2026-01-12',t:'滴滴合作+上市热',p:'b'},
@@ -1268,8 +1283,8 @@ function go(data,live){
     return`
     <div class="card" style="border-color:var(--gn)20">
       <div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 共${signalLog.length}条 · 用于核对触发当时市场上是否真有那个价格</span>
-        <button onclick="if(confirm('清空 ${STOCK_HK} 的信号日志？')){localStorage.removeItem('wp_siglog_${STOCK_CODE}');localStorage.removeItem('wp_siglog_active_${STOCK_CODE}');rl(true);}" style="float:right;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">清空</button>
-        <button onclick="const blob=new Blob([JSON.stringify(${JSON.stringify(signalLog).replace(/'/g,'\\\'')},null,2)],{type:'application/json'});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='siglog_${STOCK_CODE}_'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(u);" style="float:right;margin-right:4px;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">导出JSON</button>
+        <button onclick="clearSigLog('${STOCK_CODE}')" style="float:right;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">清空</button>
+        <button onclick="dumpSigLog('${STOCK_CODE}')" style="float:right;margin-right:4px;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">导出JSON</button>
       </div>
       <div style="max-height:280px;overflow-y:auto">
       ${dates.map(d=>`
@@ -1280,11 +1295,17 @@ function go(data,live){
             const srcBg=e.bf?'#a78bfa15':e.live?'#34d39915':'#fb923c15';
             const srcCol=e.bf?'var(--pu)':e.live?'var(--gn)':'var(--or)';
             const srcLbl=e.bf?'📚回填':(e.live?'实时':'缓存')+'·'+e.src;
+            // Trigger-mode strategies fill at the limit price (trigP); other modes fill at close (px).
+            // The trigger fill is only realistic if the day's low actually touched trigP.
+            const isTrig=e.mode==='trigger'&&e.trigP;
+            const fillP=isTrig?e.trigP:e.px;
+            const fillLbl=isTrig?'限价':e.mode==='next_open'?'T+1开':'收盘';
+            const trigOK=isTrig?e.lo<=e.trigP:true;
             return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center;${e.bf?'opacity:0.85':''}">
               <span class="mono" style="font-size:9px;color:var(--dm);min-width:80px">${tm}</span>
-              <span style="flex:1;min-width:140px"><b style="color:var(--gn)">买</b> ${e.n}${e.trigP?` <span style="color:var(--dm);font-size:9px">触发价${e.trigP}</span>`:''}</span>
-              <span class="mono" style="color:var(--yl);font-weight:700">@${e.px}</span>
-              <span class="mono" style="font-size:9px;color:var(--dm)">高${e.hi}/低${e.lo}</span>
+              <span style="flex:1;min-width:140px"><b style="color:var(--gn)">买</b> ${e.n}</span>
+              <span class="mono" style="color:var(--yl);font-weight:700" title="${isTrig?(trigOK?'当日低'+e.lo+'已穿过触发价，限价单可成交':'当日低'+e.lo+'未触及触发价，限价单未成交'):''}">${trigOK?'@':'⚠️@'}${fillP}<span style="font-size:9px;color:var(--dm);font-weight:400"> ${fillLbl}</span></span>
+              <span class="mono" style="font-size:9px;color:var(--dm)" title="收盘价 ${e.px}">收${e.px}·高${e.hi}/低${e.lo}</span>
               <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${srcBg};color:${srcCol}">${srcLbl}</span>
               <span style="font-size:9px;color:var(--dm)">3日胜率${e.wr}%</span>
             </div>`;
