@@ -947,6 +947,45 @@ function go(data,live){
   const sigLogActiveKey='wp_siglog_active_'+STOCK_CODE;
   let signalLog=[];
   try{signalLog=JSON.parse(localStorage.getItem(sigLogKey)||'[]');}catch(e){}
+
+  // === Backfill: last 5 trading days from K-bar history ===
+  // Idempotent — dedup by bd+name so re-rendering doesn't double-fill.
+  // Marked bf:true so the UI can distinguish historical reconstruction vs
+  // live captures. Uses each bar's actual close as @px and hi/lo from the
+  // bar's range. Source = '回填' so user knows the timestamp is approximate.
+  {
+    const last5=new Set(data.slice(-5).map(b=>b.d));
+    const seen=new Set(signalLog.map(e=>e.bd+'|'+e.n));
+    let added=0;
+    R.forEach(r=>{
+      (r.tr||[]).forEach(t=>{
+        if(t.t!=='B'||t.filtered)return;
+        if(!last5.has(t.d))return;
+        const k=t.d+'|'+r.n;
+        if(seen.has(k))return;
+        seen.add(k);
+        const bar=data.find(b=>b.d===t.d);if(!bar)return;
+        signalLog.push({
+          ts:bar.d+'T15:30:00',  // approximate HK market close
+          bd:bar.d,n:r.n,
+          wr:Math.round((r.hr[3]?.wr||0)*100),
+          px:+bar.c.toFixed(2),
+          trigP:r.entryType==='trigger'&&t.trigP?+t.trigP.toFixed(2):null,
+          mode:r.entryType,
+          src:'回填',live:false,
+          hi:+bar.h.toFixed(2),lo:+bar.l.toFixed(2),
+          bf:true,
+        });
+        added++;
+      });
+    });
+    if(added){
+      signalLog.sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+      if(signalLog.length>200)signalLog=signalLog.slice(-200);
+      try{localStorage.setItem(sigLogKey,JSON.stringify(signalLog));}catch(e){}
+    }
+  }
+
   let lastActive=[];
   try{lastActive=JSON.parse(localStorage.getItem(sigLogActiveKey)||'[]');}catch(e){}
   const curBarDate=L.d;
@@ -1215,10 +1254,6 @@ function go(data,live){
 
   <!-- BOTTOM -->
   <div class="row"><div class="c6">
-  <div class="card"><div class="card-t">📰 新闻催化 <span style="font-size:10px;color:var(--dm);font-weight:400">· ${STOCK_HK}</span></div>
-    ${newsStaticHTML}
-    <div id="news-live" style="margin-top:${newsStaticHTML?'8':'0'}px"><div style="color:var(--dm);font-size:11px">⏳ 获取最新新闻...</div></div>
-  </div>
   ${(()=>{
     // === 📜 Signal log card — verifies signal-fire price was real ===
     if(!signalLog.length)return`<div class="card"><div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 每次新买点触发时记录当下页面看到的股价</span></div><div style="font-size:11px;color:var(--dm);padding:8px 0">暂无记录 — 下次买入信号触发时会自动记下时间戳、信号名、当时价格、数据源</div></div>`;
@@ -1241,13 +1276,16 @@ function go(data,live){
         <div style="margin-bottom:8px">
           <div style="font-size:10px;color:var(--dm);font-weight:600;padding:3px 6px;background:var(--c2);border-radius:3px;margin-bottom:4px">${d} <span style="color:var(--tx)">${byDate[d].length}条</span></div>
           ${byDate[d].map(e=>{
-            const tm=e.ts?new Date(e.ts).toLocaleString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',month:'2-digit',day:'2-digit'}):'?';
-            return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+            const tm=e.bf?(e.bd.slice(5)+' (收盘)'):(e.ts?new Date(e.ts).toLocaleString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',month:'2-digit',day:'2-digit'}):'?');
+            const srcBg=e.bf?'#a78bfa15':e.live?'#34d39915':'#fb923c15';
+            const srcCol=e.bf?'var(--pu)':e.live?'var(--gn)':'var(--or)';
+            const srcLbl=e.bf?'📚回填':(e.live?'实时':'缓存')+'·'+e.src;
+            return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center;${e.bf?'opacity:0.85':''}">
               <span class="mono" style="font-size:9px;color:var(--dm);min-width:80px">${tm}</span>
               <span style="flex:1;min-width:140px"><b style="color:var(--gn)">买</b> ${e.n}${e.trigP?` <span style="color:var(--dm);font-size:9px">触发价${e.trigP}</span>`:''}</span>
               <span class="mono" style="color:var(--yl);font-weight:700">@${e.px}</span>
               <span class="mono" style="font-size:9px;color:var(--dm)">高${e.hi}/低${e.lo}</span>
-              <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${e.live?'#34d39915':'#fb923c15'};color:${e.live?'var(--gn)':'var(--or)'}">${e.live?'实时':'缓存'}·${e.src}</span>
+              <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${srcBg};color:${srcCol}">${srcLbl}</span>
               <span style="font-size:9px;color:var(--dm)">3日胜率${e.wr}%</span>
             </div>`;
           }).join('')}
@@ -1770,7 +1808,6 @@ function go(data,live){
       window._hfRendered=true;go(data,live);
     }})();
   }
-  fetchNews();
   startAutoRefresh();
  }catch(err){ // <<<< catch go() errors
    console.error('go() error:',err);
