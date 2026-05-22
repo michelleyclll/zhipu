@@ -504,10 +504,10 @@ function stBt(d,I){
     {n:'MACD柱反转',c:'MACD',e:'close',b:i=>i>2&&mc.bar[i]>mc.bar[i-1]&&mc.bar[i-1]<mc.bar[i-2]&&mc.bar[i]<0,s:i=>i>2&&mc.bar[i]<mc.bar[i-1]&&mc.bar[i-1]>mc.bar[i-2]&&mc.bar[i]>0},
     {n:`BOLL(${P.boll_p},${P.boll_m})反弹`,c:'BOLL',e:'trigger',tp:i=>b10[i].l,b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&d[i].c>d[i].o,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&d[i].c<d[i].o},
     {n:'BOLL(20,2)反弹',c:'BOLL',e:'trigger',tp:i=>b20[i].l,b:i=>b20[i].l!==null&&d[i].l<=b20[i].l&&d[i].c>d[i].o,s:i=>b20[i].u!==null&&d[i].h>=b20[i].u&&d[i].c<d[i].o},
-    {n:'BOLL缩口突破',c:'BOLL',e:'close',b:i=>{if(i<3||!b10[i].u)return false;const bw0=(b10[i].u-b10[i].l)/b10[i].m,bw1=(b10[i-1].u-b10[i-1].l)/b10[i-1].m;return bw0>bw1&&bw1<0.08&&isGreen(i);},s:()=>false},
+    {n:'BOLL缩口突破',c:'BOLL',e:'close',b:i=>{if(i<3||!b10[i].u)return false;const bw0=(b10[i].u-b10[i].l)/b10[i].m,bw1=(b10[i-1].u-b10[i-1].l)/b10[i-1].m;return bw0>bw1&&bw1<0.08&&isGreen(i);},s:i=>{if(i<3||!b10[i].u)return false;const bw0=(b10[i].u-b10[i].l)/b10[i].m,bw1=(b10[i-1].u-b10[i-1].l)/b10[i-1].m;return bw0>bw1&&bw1<0.08&&!isGreen(i);}},
     {n:'MA5/10交叉',c:'均线',e:'close',b:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]>m10[i]&&m5[i-1]<=m10[i-1],s:i=>i>0&&m5[i]&&m10[i]&&m5[i-1]&&m10[i-1]&&m5[i]<m10[i]&&m5[i-1]>=m10[i-1]},
     {n:'MA10/20交叉',c:'均线',e:'close',b:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]>m20[i]&&m10[i-1]<=m20[i-1],s:i=>i>0&&m10[i]&&m20[i]&&m10[i-1]&&m20[i-1]&&m10[i]<m20[i]&&m10[i-1]>=m20[i-1]},
-    {n:'MA多头回踩MA10',c:'均线',e:'trigger',tp:i=>m10[i],b:i=>i>1&&m5[i]&&m10[i]&&m20[i]&&m5[i]>m10[i]&&m10[i]>m20[i]&&d[i].l<=m10[i]*1.01&&d[i].c>m10[i]&&isGreen(i),s:()=>false},
+    {n:'MA多头回踩MA10',c:'均线',e:'trigger',tp:i=>m10[i],b:i=>i>1&&m5[i]&&m10[i]&&m20[i]&&m5[i]>m10[i]&&m10[i]>m20[i]&&d[i].l<=m10[i]*1.01&&d[i].c>m10[i]&&isGreen(i),s:i=>i>1&&m5[i]&&m10[i]&&m20[i]&&m5[i]<m10[i]&&m10[i]<m20[i]&&d[i].h>=m10[i]*0.99&&d[i].c<m10[i]&&!isGreen(i)},
     {n:`BIAS${P.bias_ma} <${P.bias_buy}%反弹`,c:'乖离率',e:'close',b:i=>i>0&&bi5[i]!==null&&bi5[i]>P.bias_buy&&bi5[i-1]<=P.bias_buy,s:i=>i>0&&bi5[i]!==null&&bi5[i]<P.bias_sell&&bi5[i-1]>=P.bias_sell},
     {n:`KDJ低位金叉(<${P.kdj_low})`,c:'KDJ',e:'close',b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low,s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>P.kdj_high},
 
@@ -530,13 +530,15 @@ function stBt(d,I){
     {n:'📏 长下影线(>振幅60%)',c:'K线',e:'trigger',
       tp:i=>d[i].l+range(i)*0.3, // 探底反弹30%处入场
       b:i=>i>0&&lowerShadow(i)>range(i)*0.6&&isGreen(i)&&range(i)>d[i].c*0.02,
-      s:()=>false},
+      // 对称卖出: 长上影线>振幅60% + 阴线 = 冲高回落
+      s:i=>i>0&&upperShadow(i)>range(i)*0.6&&!isGreen(i)&&range(i)>d[i].c*0.02},
 
     // === 量价 ===
     {n:'放量阳线',c:'量价',e:'close',b:i=>{if(i<P.vol_lookback)return false;return d[i].v>avgVol(i,P.vol_lookback)*P.vol_mult&&isGreen(i);},s:i=>{if(i<P.vol_lookback)return false;return d[i].v>avgVol(i,P.vol_lookback)*P.vol_mult&&!isGreen(i);}},
     {n:'缩量回调+阳线',c:'量价',e:'close',
       b:i=>{if(i<3)return false;return d[i].v<avgVol(i,5)*0.6&&isGreen(i)&&pctChg(i-1)<0&&pctChg(i-2)<0;},
-      s:()=>false},
+      // 对称卖出: 缩量反弹+阴线 — 涨完无量接力，反转信号
+      s:i=>{if(i<3)return false;return d[i].v<avgVol(i,5)*0.6&&!isGreen(i)&&pctChg(i-1)>0&&pctChg(i-2)>0;}},
     {n:'量价背离(价新高量萎缩)',c:'量价',e:'close',
       b:()=>false,
       s:i=>{if(i<5)return false;const h5=Math.max(...d.slice(i-4,i).map(x=>x.h));return d[i].h>h5&&d[i].v<avgVol(i,5)*0.7&&!isGreen(i);}},
@@ -545,19 +547,29 @@ function stBt(d,I){
     {n:`RSI<${P.rsi_combo_buy}+MACD金叉`,c:'组合',e:'close',b:i=>i>0&&r14[i]<P.rsi_combo_buy&&mc.dif[i]>mc.dea[i]&&mc.dif[i-1]<=mc.dea[i-1],s:i=>i>0&&r14[i]>P.rsi_combo_sell&&mc.dif[i]<mc.dea[i]&&mc.dif[i-1]>=mc.dea[i-1]},
     {n:`BOLL+RSI<${P.rsi_combo_buy}`,c:'组合',e:'trigger',tp:i=>b10[i].l,b:i=>b10[i].l!==null&&d[i].l<=b10[i].l&&r14[i]<P.rsi_combo_buy,s:i=>b10[i].u!==null&&d[i].h>=b10[i].u&&r14[i]>65},
     {n:`BIAS<${P.bias_buy}+MACD翻正`,c:'组合',e:'close',b:i=>i>1&&bi5[i]!==null&&bi5[i]<P.bias_buy&&mc.bar[i]>0&&mc.bar[i-1]<=0,s:i=>i>1&&bi5[i]!==null&&bi5[i]>P.bias_sell&&mc.bar[i]<0&&mc.bar[i-1]>=0},
-    {n:'锤子+BOLL下轨',c:'组合',e:'trigger',tp:i=>b10[i].l,b:i=>i>0&&b10[i].l!==null&&d[i].l<=b10[i].l&&lowerShadow(i)>body(i)*1.5&&isGreen(i),s:()=>false},
+    {n:'锤子+BOLL下轨',c:'组合',e:'trigger',tp:i=>b10[i].l,b:i=>i>0&&b10[i].l!==null&&d[i].l<=b10[i].l&&lowerShadow(i)>body(i)*1.5&&isGreen(i),
+      // 对称卖出: 倒锤子+BOLL上轨 = 高位见顶
+      s:i=>i>0&&b10[i].u!==null&&d[i].h>=b10[i].u&&upperShadow(i)>body(i)*1.5&&!isGreen(i)},
     {n:'吞没+放量(>2x)',c:'组合',e:'trigger',
       tp:i=>i>0?d[i-1].o:d[i].c, // 突破前日开盘=吞没确认
-      b:i=>{if(i<2)return false;return!isGreen(i-1)&&isGreen(i)&&d[i].o<=d[i-1].c&&d[i].c>=d[i-1].o&&d[i].v>avgVol(i,10)*2;},s:()=>false},
+      b:i=>{if(i<2)return false;return!isGreen(i-1)&&isGreen(i)&&d[i].o<=d[i-1].c&&d[i].c>=d[i-1].o&&d[i].v>avgVol(i,10)*2;},
+      // 对称卖出: 看跌吞没+放量
+      s:i=>{if(i<2)return false;return isGreen(i-1)&&!isGreen(i)&&d[i].o>=d[i-1].c&&d[i].c<=d[i-1].o&&d[i].v>avgVol(i,10)*2;}},
     {n:'KDJ金叉+锤子线',c:'组合',e:'trigger',
       tp:i=>d[i].l+(d[i].c-d[i].l)*0.4,
-      b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low&&lowerShadow(i)>body(i)*1.5,s:()=>false},
+      b:i=>i>0&&kd[i].k>kd[i].d&&kd[i-1].k<=kd[i-1].d&&kd[i].k<P.kdj_low&&lowerShadow(i)>body(i)*1.5,
+      // 对称卖出: KDJ高位死叉 + 倒锤子线
+      s:i=>i>0&&kd[i].k<kd[i].d&&kd[i-1].k>=kd[i-1].d&&kd[i].k>P.kdj_high&&upperShadow(i)>body(i)*1.5},
     {n:'三连跌后阳线反转',c:'组合',e:'trigger',
       tp:i=>i>0?d[i-1].c:d[i].c, // 看到突破前日收盘价入场
-      b:i=>i>3&&pctChg(i-3)<0&&pctChg(i-2)<0&&pctChg(i-1)<0&&isGreen(i)&&body(i)>body(i-1)*1.2,s:()=>false},
+      b:i=>i>3&&pctChg(i-3)<0&&pctChg(i-2)<0&&pctChg(i-1)<0&&isGreen(i)&&body(i)>body(i-1)*1.2,
+      // 对称卖出: 三连涨后阴线反转 = 见顶信号
+      s:i=>i>3&&pctChg(i-3)>0&&pctChg(i-2)>0&&pctChg(i-1)>0&&!isGreen(i)&&body(i)>body(i-1)*1.2},
     {n:'RSI超卖+长下影线',c:'组合',e:'trigger',
       tp:i=>d[i].l+range(i)*0.3,
-      b:i=>i>0&&r14[i]<35&&lowerShadow(i)>range(i)*0.5&&isGreen(i),s:()=>false},
+      b:i=>i>0&&r14[i]<35&&lowerShadow(i)>range(i)*0.5&&isGreen(i),
+      // 对称卖出: RSI超买 + 长上影线 = 冲高乏力
+      s:i=>i>0&&r14[i]>65&&upperShadow(i)>range(i)*0.5&&!isGreen(i)},
   ];
 
   // === Daily ATR(14) — exposed for per-trade TP/SL across all backtests (Ch7) ===
