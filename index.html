@@ -938,6 +938,46 @@ function go(data,live){
   }
   window._lastSignalCheck=Date.now();
 
+  // === Signal log — proof-of-trigger price at signal-fire time (Ch10 audit) ===
+  // Every render we diff current active buy-signal names against last seen.
+  // New names get appended to localStorage with timestamp + concurrent price +
+  // data source — so later you can verify the market price was actually that
+  // value when the signal fired (not retroactively pretty after auto-refresh).
+  const sigLogKey='wp_siglog_'+STOCK_CODE;
+  const sigLogActiveKey='wp_siglog_active_'+STOCK_CODE;
+  let signalLog=[];
+  try{signalLog=JSON.parse(localStorage.getItem(sigLogKey)||'[]');}catch(e){}
+  let lastActive=[];
+  try{lastActive=JSON.parse(localStorage.getItem(sigLogActiveKey)||'[]');}catch(e){}
+  const curBarDate=L.d;
+  const nowActive=tB.map(r=>r.n);
+  // Reset the active set on a new bar (signal can re-fire on a new day)
+  const lastActiveDate=lastActive.length&&lastActive[0]?.bd||'';
+  const isNewBar=lastActiveDate!==curBarDate;
+  const seenNames=isNewBar?new Set():new Set(lastActive.map(x=>x.n));
+  const newlyFired=tB.filter(r=>!seenNames.has(r.n));
+  newlyFired.forEach(r=>{
+    const lastBuy=r.tr.filter(t=>t.t==='B').slice(-1)[0];
+    signalLog.push({
+      ts:new Date().toISOString(),       // wall-clock at log time
+      bd:curBarDate,                      // bar date the signal fired on
+      n:r.n,                              // signal name
+      wr:Math.round((r.hr[3]?.wr||0)*100),// historical 3-day WR for context
+      px:+L.c.toFixed(2),                 // CURRENT close = "the price the page saw"
+      trigP:r.entryType==='trigger'&&lastBuy?.trigP?+lastBuy.trigP.toFixed(2):null,
+      mode:r.entryType,                   // close / next_open / trigger
+      src:lastFetchSrc||'cache',          // which data source fed this
+      live:!!live,
+      hi:+L.h.toFixed(2),lo:+L.l.toFixed(2), // bar's high/low (price range at log time)
+    });
+  });
+  // Trim log to last 200 entries per stock
+  if(signalLog.length>200)signalLog=signalLog.slice(-200);
+  try{
+    if(newlyFired.length)localStorage.setItem(sigLogKey,JSON.stringify(signalLog));
+    localStorage.setItem(sigLogActiveKey,JSON.stringify(tB.map(r=>({n:r.n,bd:curBarDate}))));
+  }catch(e){}
+
   // === Manual position tracking (from localStorage) ===
   const bestSweep=(window._sweepResults&&window._sweepResults.length)?window._sweepResults.filter(r=>!r.overfit)[0]||window._sweepResults[0]:null;
   const atrRec=window._autoTPSL;
@@ -1179,6 +1219,47 @@ function go(data,live){
     ${newsStaticHTML}
     <div id="news-live" style="margin-top:${newsStaticHTML?'8':'0'}px"><div style="color:var(--dm);font-size:11px">⏳ 获取最新新闻...</div></div>
   </div>
+  ${(()=>{
+    // === 📜 Signal log card — verifies signal-fire price was real ===
+    if(!signalLog.length)return`<div class="card"><div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 每次新买点触发时记录当下页面看到的股价</span></div><div style="font-size:11px;color:var(--dm);padding:8px 0">暂无记录 — 下次买入信号触发时会自动记下时间戳、信号名、当时价格、数据源</div></div>`;
+    // Group by date
+    const byDate={};
+    signalLog.slice().reverse().forEach(e=>{
+      const d=e.bd||'?';
+      if(!byDate[d])byDate[d]=[];
+      byDate[d].push(e);
+    });
+    const dates=Object.keys(byDate).sort().reverse();
+    return`
+    <div class="card" style="border-color:var(--gn)20">
+      <div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 共${signalLog.length}条 · 用于核对触发当时市场上是否真有那个价格</span>
+        <button onclick="if(confirm('清空 ${STOCK_HK} 的信号日志？')){localStorage.removeItem('wp_siglog_${STOCK_CODE}');localStorage.removeItem('wp_siglog_active_${STOCK_CODE}');rl(true);}" style="float:right;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">清空</button>
+        <button onclick="const blob=new Blob([JSON.stringify(${JSON.stringify(signalLog).replace(/'/g,'\\\'')},null,2)],{type:'application/json'});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='siglog_${STOCK_CODE}_'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(u);" style="float:right;margin-right:4px;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">导出JSON</button>
+      </div>
+      <div style="max-height:280px;overflow-y:auto">
+      ${dates.map(d=>`
+        <div style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--dm);font-weight:600;padding:3px 6px;background:var(--c2);border-radius:3px;margin-bottom:4px">${d} <span style="color:var(--tx)">${byDate[d].length}条</span></div>
+          ${byDate[d].map(e=>{
+            const tm=e.ts?new Date(e.ts).toLocaleString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',month:'2-digit',day:'2-digit'}):'?';
+            return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+              <span class="mono" style="font-size:9px;color:var(--dm);min-width:80px">${tm}</span>
+              <span style="flex:1;min-width:140px"><b style="color:var(--gn)">买</b> ${e.n}${e.trigP?` <span style="color:var(--dm);font-size:9px">触发价${e.trigP}</span>`:''}</span>
+              <span class="mono" style="color:var(--yl);font-weight:700">@${e.px}</span>
+              <span class="mono" style="font-size:9px;color:var(--dm)">高${e.hi}/低${e.lo}</span>
+              <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${e.live?'#34d39915':'#fb923c15'};color:${e.live?'var(--gn)':'var(--or)'}">${e.live?'实时':'缓存'}·${e.src}</span>
+              <span style="font-size:9px;color:var(--dm)">3日胜率${e.wr}%</span>
+            </div>`;
+          }).join('')}
+        </div>
+      `).join('')}
+      </div>
+      <div style="font-size:9px;color:var(--dm);margin-top:6px;padding:6px 8px;background:var(--c2);border-radius:4px;line-height:1.5">
+        <b>核对方法</b>：日志里的 <b>@价</b> 是<b>记录瞬间页面显示的当日收盘价</b>，<b>高/低</b>是当日 K 线极值范围 — 你可以去 Wind / 同花顺对比同一时间戳的实际行情。<br>
+        <b>同一信号在同一日只记一次</b> · 新交易日同名信号会重新记 · 最多保留 200 条
+      </div>
+    </div>`;
+  })()}
   ${lockupCardHTML}
   </div>
 
