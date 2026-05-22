@@ -1521,7 +1521,10 @@ function go(data,live){
     // Pessimistic: 0.1% slippage entry+exit, 0.2% round-trip cost, SL wins ties, 20d cap. (Ch8)
     const SLIP_D=0.001, COST_D=0.002, MAX_HOLD=20, TP_MULT=2, SL_MULT=1.5;
     const dailyATR=window._atr14||[]; // per-bar daily ATR(14), indexed to data
-    function simTeam(team){
+    // exitMode: 'self' = only the buying strategy's own s(i) triggers reversal exit (default)
+    //           'team' = ANY team strategy's s(i) triggers reversal exit (more conservative)
+    function simTeam(team,exitMode){
+      exitMode=exitMode||'self';
       let equity=10000,peak=10000,maxDD=0,trades=0,wins=0;
       const curve=[{d:data[0].d,eq:equity}];
       const tradeLog=[];
@@ -1555,10 +1558,12 @@ function go(data,live){
         }else{
           const hitTP=data[i].h>=entryTP;
           const hitSL=data[i].l<=entrySL;
-          // NEW: signal-reversal early exit — if the buying strategy's own sell
-          // signal fires while we hold, exit at close. Priority is below TP/SL
-          // so a clean TP/SL bar still wins. Matches the spec's b(i)/s(i) pairing.
-          const sigSells=entryStrategy&&entryStrategy.s&&entryStrategy.s(i);
+          // Reversal-exit gating depends on exitMode:
+          //  'self' — only the buying strategy's own sell signal counts
+          //  'team' — any team strategy's sell signal counts (team consensus / faster exit)
+          const sigSells=exitMode==='team'
+            ?team.strategies.some(s=>s.s&&s.s(i))
+            :(entryStrategy&&entryStrategy.s&&entryStrategy.s(i));
           let exitP=null,exitType='';
           if(hitTP&&hitSL){exitP=entrySL*(1-SLIP_D);exitType='❌SL同K';}    // pessimistic tie
           else if(hitTP){exitP=entryTP*(1-SLIP_D);exitType='✅TP';}
@@ -1582,15 +1587,38 @@ function go(data,live){
       const avgSLpct=trades?tradeLog.reduce((s,t)=>s+t.slPct,0)/trades:0;
       // Exit-type breakdown for transparency
       const exitMix={};tradeLog.forEach(t=>{const k=t.exitType||'?';exitMix[k]=(exitMix[k]||0)+1;});
-      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog,holding,avgTPpct,avgSLpct,exitMix};
+      return{curve,equity,totalRet,trades,wins,wr:trades?wins/trades:0,maxDD,tradeLog,holding,avgTPpct,avgSLpct,exitMix,exitMode};
     }
 
-    const rA=simTeam(teamA),rB=simTeam(teamB);
-    // Average TP/SL across both teams — for header display only (each trade still uses its own)
+    // Run BOTH exit modes for each team so the data tells which is better, not opinion
+    const rA_self=simTeam(teamA,'self'),rA_team=simTeam(teamA,'team');
+    const rB_self=simTeam(teamB,'self'),rB_team=simTeam(teamB,'team');
+    // Per-team winner = higher totalRet
+    const winA=rA_self.totalRet>=rA_team.totalRet?{r:rA_self,m:'self'}:{r:rA_team,m:'team'};
+    const winB=rB_self.totalRet>=rB_team.totalRet?{r:rB_self,m:'self'}:{r:rB_team,m:'team'};
+    const rA=winA.r,rB=winB.r; // keep `rA`/`rB` for downstream display compatibility
+    // Average TP/SL across both teams' winning modes — for header display only
     const allLogs=[...rA.tradeLog,...rB.tradeLog];
     const compTP=allLogs.length?allLogs.reduce((s,t)=>s+t.tpPct,0)/allLogs.length/100:0.08;
     const compSL=allLogs.length?allLogs.reduce((s,t)=>s+t.slPct,0)/allLogs.length/100:0.05;
     const winner=rA.totalRet>rB.totalRet?'A':'B';
+    // Helper: render a single mode's stat block
+    const modeBlock=(r,label,isWinner)=>{
+      const mixStr=Object.entries(r.exitMix||{}).map(([k,v])=>`<span style="background:var(--bg);padding:1px 5px;border-radius:3px;margin-right:3px">${k} <b>${v}</b></span>`).join('');
+      return`<div style="padding:8px;border-radius:6px;margin-top:6px;background:${isWinner?'var(--bg)':'transparent'};border:1px solid ${isWinner?'var(--yl)':'#1e294020'}">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:4px">
+          <span style="color:${isWinner?'var(--yl)':'var(--dm)'};font-weight:${isWinner?700:400}">${label}${isWinner?' ⭐胜':''}</span>
+          <span class="mono" style="color:${r.totalRet>=0?'var(--gn)':'var(--rd)'};font-weight:700">${r.totalRet>=0?'+':''}${r.totalRet.toFixed(1)}%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:10px;margin-bottom:4px">
+          <div>笔 <b class="mono">${r.trades}</b></div>
+          <div>胜率 <b class="mono" style="color:${r.wr>=.5?'var(--gn)':'var(--yl)'}">${(r.wr*100).toFixed(0)}%</b></div>
+          <div>回撤 <b class="mono" style="color:var(--rd)">${(r.maxDD*100).toFixed(1)}%</b></div>
+          <div>终值 <b class="mono">\$${r.equity.toFixed(0)}</b></div>
+        </div>
+        <div style="font-size:9px;color:var(--dm)">${mixStr||'<i>无交易</i>'}</div>
+      </div>`;
+    };
 
     // Build equity curve data for chart
     const eqLabels=rA.curve.map(x=>x.d.slice(5));
@@ -1603,31 +1631,17 @@ function go(data,live){
   <div class="card" style="border-color:${winner==='A'?teamA.color:teamB.color}">
     <div class="card-t">⚔️ 策略对决 <span style="font-size:10px;color:var(--dm);font-weight:400">每笔ATR自适应 (买入当天ATR×2止盈/×1.5止损) · 平均TP${(compTP*100).toFixed(1)}%/SL${(compSL*100).toFixed(1)}% · 起始$10,000 · 悲观模式</span></div>
     <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-      <div style="flex:1;min-width:200px;padding:12px;border-radius:8px;background:${teamA.color}08;border:1px solid ${teamA.color}30">
-        <div style="font-size:13px;font-weight:700;color:${teamA.color}">${teamA.name} ${winner==='A'?'🏆':''}</div>
-        <div style="font-size:10px;color:var(--dm);margin-bottom:8px">${teamA.desc}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-          <div>终值 <b class="mono" style="color:${rA.totalRet>=0?'var(--gn)':'var(--rd)'}">\$${rA.equity.toFixed(0)}</b></div>
-          <div>报酬 <b class="mono" style="color:${rA.totalRet>=0?'var(--gn)':'var(--rd)'}">${rA.totalRet>=0?'+':''}${rA.totalRet.toFixed(1)}%</b></div>
-          <div>交易 <b class="mono">${rA.trades}笔</b></div>
-          <div>胜率 <b class="mono" style="color:${rA.wr>=.5?'var(--gn)':'var(--rd)'}">${(rA.wr*100).toFixed(0)}%</b></div>
-          <div>最大回撤 <b class="mono" style="color:var(--rd)">${(rA.maxDD*100).toFixed(1)}%</b></div>
-          <div>策略数 <b class="mono">${teamA.strategies.length}</b></div>
-        </div>
-        <div style="margin-top:8px;font-size:10px;color:var(--dm);display:flex;flex-wrap:wrap;gap:6px">${Object.entries(rA.exitMix||{}).map(([k,v])=>`<span style="background:var(--c2);padding:1px 6px;border-radius:4px">${k} <b style="color:var(--tx)">${v}</b></span>`).join('')}</div>
+      <div style="flex:1;min-width:240px;padding:12px;border-radius:8px;background:${teamA.color}08;border:1px solid ${teamA.color}30">
+        <div style="font-size:13px;font-weight:700;color:${teamA.color}">${teamA.name} ${winner==='A'?'🏆':''} <span style="font-size:10px;color:var(--dm);font-weight:400">· ${teamA.strategies.length} 策略</span></div>
+        <div style="font-size:10px;color:var(--dm);margin-bottom:4px">${teamA.desc}</div>
+        ${modeBlock(rA_self,'📐 自身退出 (s只看开仓策略)',winA.m==='self')}
+        ${modeBlock(rA_team,'👥 团队退出 (s任一策略触发)',winA.m==='team')}
       </div>
-      <div style="flex:1;min-width:200px;padding:12px;border-radius:8px;background:${teamB.color}08;border:1px solid ${teamB.color}30">
-        <div style="font-size:13px;font-weight:700;color:${teamB.color}">${teamB.name} ${winner==='B'?'🏆':''}</div>
-        <div style="font-size:10px;color:var(--dm);margin-bottom:8px">${teamB.desc}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-          <div>终值 <b class="mono" style="color:${rB.totalRet>=0?'var(--gn)':'var(--rd)'}">\$${rB.equity.toFixed(0)}</b></div>
-          <div>报酬 <b class="mono" style="color:${rB.totalRet>=0?'var(--gn)':'var(--rd)'}">${rB.totalRet>=0?'+':''}${rB.totalRet.toFixed(1)}%</b></div>
-          <div>交易 <b class="mono">${rB.trades}笔</b></div>
-          <div>胜率 <b class="mono" style="color:${rB.wr>=.5?'var(--gn)':'var(--rd)'}">${(rB.wr*100).toFixed(0)}%</b></div>
-          <div>最大回撤 <b class="mono" style="color:var(--rd)">${(rB.maxDD*100).toFixed(1)}%</b></div>
-          <div>策略数 <b class="mono">${teamB.strategies.length}</b></div>
-        </div>
-        <div style="margin-top:8px;font-size:10px;color:var(--dm);display:flex;flex-wrap:wrap;gap:6px">${Object.entries(rB.exitMix||{}).map(([k,v])=>`<span style="background:var(--c2);padding:1px 6px;border-radius:4px">${k} <b style="color:var(--tx)">${v}</b></span>`).join('')}</div>
+      <div style="flex:1;min-width:240px;padding:12px;border-radius:8px;background:${teamB.color}08;border:1px solid ${teamB.color}30">
+        <div style="font-size:13px;font-weight:700;color:${teamB.color}">${teamB.name} ${winner==='B'?'🏆':''} <span style="font-size:10px;color:var(--dm);font-weight:400">· ${teamB.strategies.length} 策略</span></div>
+        <div style="font-size:10px;color:var(--dm);margin-bottom:4px">${teamB.desc}</div>
+        ${modeBlock(rB_self,'📐 自身退出 (s只看开仓策略)',winB.m==='self')}
+        ${modeBlock(rB_team,'👥 团队退出 (s任一策略触发)',winB.m==='team')}
       </div>
     </div>
     <div style="font-size:10px;color:var(--dm);margin-bottom:6px">累计权益曲线 (起始 $10,000)</div>
@@ -1667,8 +1681,9 @@ function go(data,live){
     </div>
 
     <div style="font-size:9px;color:var(--dm);margin-top:8px;padding:6px 8px;background:var(--c2);border-radius:6px">
-      规则: 任一策略触发→开仓(滑点+0.1%) → 持有至 <b>每笔自己的</b> TP(买入价+2×当日ATR) / SL(买入价-1.5×当日ATR) / <b>🔄信号反转</b>(买入策略的s(i)触发收盘出) / 20天超时<br>
-      悲观同K SL优先 · 成本0.2% · 趋势过滤(MA20下行不买) · 列均TP+${(compTP*100).toFixed(1)}%/SL-${(compSL*100).toFixed(1)}% · 退出类型计数显示在队伍卡片
+      规则: 任一策略触发→开仓(滑点+0.1%) → 持有至 <b>每笔自己的</b> TP(买入价+2×当日ATR) / SL(买入价-1.5×当日ATR) / 🔄反转 / 20天超时<br>
+      <b>反转退出有两种模式</b>: 📐<b>自身退出</b> 只听开仓那个策略的 s(i) · 👥<b>团队退出</b> 听队内任一策略的 s(i)。每队两种模式都跑，⭐胜表示当前股票哪种报酬更高 — 切换股票后胜者会变。<br>
+      悲观同K SL优先 · 成本0.2% · 趋势过滤(MA20下行不买) · 列均TP+${(compTP*100).toFixed(1)}%/SL-${(compSL*100).toFixed(1)}%
     </div>
   </div>`;
   })()}
