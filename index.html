@@ -132,6 +132,14 @@ function clearSigLog(code){
   localStorage.removeItem('wp_siglog_active_'+code);
   rl(true);
 }
+function sigTab(which){
+  ['recent','all'].forEach(t=>{
+    const pane=document.getElementById('sigtab-'+t);
+    const btn=document.getElementById('sigbtn-'+t);
+    if(pane)pane.style.display=(t===which)?'':'none';
+    if(btn){btn.style.background=(t===which)?'var(--ac)':'var(--c2)';btn.style.color=(t===which)?'#fff':'var(--dm)';}
+  });
+}
 
 const NW=[
   {d:'2026-01-08',t:'IPO上市116.2',p:'n'},{d:'2026-01-12',t:'滴滴合作+上市热',p:'b'},
@@ -962,26 +970,30 @@ function go(data,live){
   const sigLogActiveKey='wp_siglog_active_'+STOCK_CODE;
   let signalLog=[];
   try{signalLog=JSON.parse(localStorage.getItem(sigLogKey)||'[]');}catch(e){}
+  // Backwards-compat: entries written before sell support had no `type`
+  signalLog.forEach(e=>{if(!e.type)e.type='B';});
 
-  // === Backfill: last 5 trading days from K-bar history ===
-  // Idempotent — dedup by bd+name so re-rendering doesn't double-fill.
+  // === Backfill: last 5 trading days from K-bar history (buys + sells) ===
+  // Idempotent — dedup by bd+name+type so re-rendering doesn't double-fill.
   // Marked bf:true so the UI can distinguish historical reconstruction vs
   // live captures. Uses each bar's actual close as @px and hi/lo from the
   // bar's range. Source = '回填' so user knows the timestamp is approximate.
   {
     const last5=new Set(data.slice(-5).map(b=>b.d));
-    const seen=new Set(signalLog.map(e=>e.bd+'|'+e.n));
+    const seen=new Set(signalLog.map(e=>e.bd+'|'+e.n+'|'+e.type));
     let added=0;
     R.forEach(r=>{
       (r.tr||[]).forEach(t=>{
-        if(t.t!=='B'||t.filtered)return;
+        if(t.t!=='B'&&t.t!=='S')return;
+        if(t.filtered)return;
         if(!last5.has(t.d))return;
-        const k=t.d+'|'+r.n;
+        const k=t.d+'|'+r.n+'|'+t.t;
         if(seen.has(k))return;
         seen.add(k);
         const bar=data.find(b=>b.d===t.d);if(!bar)return;
         signalLog.push({
-          ts:bar.d+'T15:30:00',  // approximate HK market close
+          type:t.t,             // 'B' = buy, 'S' = sell
+          ts:bar.d+'T15:30:00', // approximate HK market close
           bd:bar.d,n:r.n,
           wr:Math.round((r.hr[3]?.wr||0)*100),
           px:+bar.c.toFixed(2),
@@ -1004,32 +1016,39 @@ function go(data,live){
   let lastActive=[];
   try{lastActive=JSON.parse(localStorage.getItem(sigLogActiveKey)||'[]');}catch(e){}
   const curBarDate=L.d;
-  const nowActive=tB.map(r=>r.n);
   // Reset the active set on a new bar (signal can re-fire on a new day)
   const lastActiveDate=lastActive.length&&lastActive[0]?.bd||'';
   const isNewBar=lastActiveDate!==curBarDate;
-  const seenNames=isNewBar?new Set():new Set(lastActive.map(x=>x.n));
-  const newlyFired=tB.filter(r=>!seenNames.has(r.n));
-  newlyFired.forEach(r=>{
-    const lastBuy=r.tr.filter(t=>t.t==='B').slice(-1)[0];
+  const seenBuy=isNewBar?new Set():new Set(lastActive.filter(x=>x.type!=='S').map(x=>x.n));
+  const seenSell=isNewBar?new Set():new Set(lastActive.filter(x=>x.type==='S').map(x=>x.n));
+  const newlyB=tB.filter(r=>!seenBuy.has(r.n));
+  const newlyS=tS.filter(r=>!seenSell.has(r.n));
+  const pushEntry=(r,type)=>{
+    const lastTrade=r.tr.filter(t=>t.t===type).slice(-1)[0];
     signalLog.push({
-      ts:new Date().toISOString(),       // wall-clock at log time
-      bd:curBarDate,                      // bar date the signal fired on
-      n:r.n,                              // signal name
-      wr:Math.round((r.hr[3]?.wr||0)*100),// historical 3-day WR for context
-      px:+L.c.toFixed(2),                 // CURRENT close = "the price the page saw"
-      trigP:r.entryType==='trigger'&&lastBuy?.trigP?+lastBuy.trigP.toFixed(2):null,
-      mode:r.entryType,                   // close / next_open / trigger
-      src:lastFetchSrc||'cache',          // which data source fed this
+      type,
+      ts:new Date().toISOString(),
+      bd:curBarDate,
+      n:r.n,
+      wr:Math.round((r.hr[3]?.wr||0)*100),
+      px:+L.c.toFixed(2),
+      trigP:type==='B'&&r.entryType==='trigger'&&lastTrade?.trigP?+lastTrade.trigP.toFixed(2):null,
+      mode:r.entryType,
+      src:lastFetchSrc||'cache',
       live:!!live,
-      hi:+L.h.toFixed(2),lo:+L.l.toFixed(2), // bar's high/low (price range at log time)
+      hi:+L.h.toFixed(2),lo:+L.l.toFixed(2),
     });
-  });
+  };
+  newlyB.forEach(r=>pushEntry(r,'B'));
+  newlyS.forEach(r=>pushEntry(r,'S'));
   // Trim log to last 200 entries per stock
   if(signalLog.length>200)signalLog=signalLog.slice(-200);
   try{
-    if(newlyFired.length)localStorage.setItem(sigLogKey,JSON.stringify(signalLog));
-    localStorage.setItem(sigLogActiveKey,JSON.stringify(tB.map(r=>({n:r.n,bd:curBarDate}))));
+    if(newlyB.length||newlyS.length)localStorage.setItem(sigLogKey,JSON.stringify(signalLog));
+    localStorage.setItem(sigLogActiveKey,JSON.stringify([
+      ...tB.map(r=>({n:r.n,bd:curBarDate,type:'B'})),
+      ...tS.map(r=>({n:r.n,bd:curBarDate,type:'S'})),
+    ]));
   }catch(e){}
 
   // === Manual position tracking (from localStorage) ===
@@ -1271,51 +1290,65 @@ function go(data,live){
   <div class="row"><div class="c6">
   ${(()=>{
     // === 📜 Signal log card — verifies signal-fire price was real ===
-    if(!signalLog.length)return`<div class="card"><div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 每次新买点触发时记录当下页面看到的股价</span></div><div style="font-size:11px;color:var(--dm);padding:8px 0">暂无记录 — 下次买入信号触发时会自动记下时间戳、信号名、当时价格、数据源</div></div>`;
-    // Group by date
-    const byDate={};
-    signalLog.slice().reverse().forEach(e=>{
-      const d=e.bd||'?';
-      if(!byDate[d])byDate[d]=[];
-      byDate[d].push(e);
-    });
-    const dates=Object.keys(byDate).sort().reverse();
+    if(!signalLog.length)return`<div class="card"><div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 每次新买/卖信号触发时记录当下页面看到的股价</span></div><div style="font-size:11px;color:var(--dm);padding:8px 0">暂无记录 — 下次买/卖信号触发时会自动记下时间戳、信号名、当时价格、数据源</div></div>`;
+    // Row renderer (single source of truth, used by both tabs)
+    const rowHTML=e=>{
+      const tm=e.bf?(e.bd.slice(5)+' (收盘)'):(e.ts?new Date(e.ts).toLocaleString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',month:'2-digit',day:'2-digit'}):'?');
+      const srcBg=e.bf?'#a78bfa15':e.live?'#34d39915':'#fb923c15';
+      const srcCol=e.bf?'var(--pu)':e.live?'var(--gn)':'var(--or)';
+      const srcLbl=e.bf?'📚回填':(e.live?'实时':'缓存')+'·'+e.src;
+      const isSell=e.type==='S';
+      const sideTxt=isSell?'卖':'买';
+      const sideColor=isSell?'var(--rd)':'var(--gn)';
+      // Trigger-mode buy fills at limit price; sells / close-mode / next-open fill at close.
+      const isTrigBuy=!isSell&&e.mode==='trigger'&&e.trigP;
+      const fillP=isTrigBuy?e.trigP:e.px;
+      const fillLbl=isTrigBuy?'限价':e.mode==='next_open'?'T+1开':'收盘';
+      const trigOK=isTrigBuy?e.lo<=e.trigP:true;
+      return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center;${e.bf?'opacity:0.85':''}">
+        <span class="mono" style="font-size:9px;color:var(--dm);min-width:80px">${tm}</span>
+        <span style="flex:1;min-width:140px"><b style="color:${sideColor}">${sideTxt}</b> ${e.n}</span>
+        <span class="mono" style="color:var(--yl);font-weight:700" title="${isTrigBuy?(trigOK?'当日低'+e.lo+'已穿过触发价，限价单可成交':'当日低'+e.lo+'未触及触发价，限价单未成交'):''}">${trigOK?'@':'⚠️@'}${fillP}<span style="font-size:9px;color:var(--dm);font-weight:400"> ${fillLbl}</span></span>
+        <span class="mono" style="font-size:9px;color:var(--dm)" title="收盘价 ${e.px}">收${e.px}·高${e.hi}/低${e.lo}</span>
+        <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${srcBg};color:${srcCol}">${srcLbl}</span>
+        <span style="font-size:9px;color:var(--dm)">3日胜率${e.wr}%</span>
+      </div>`;
+    };
+    // Group helper
+    const renderGrouped=entries=>{
+      if(!entries.length)return`<div style="font-size:11px;color:var(--dm);padding:12px;text-align:center">无记录</div>`;
+      const byDate={};
+      entries.slice().reverse().forEach(e=>{const d=e.bd||'?';if(!byDate[d])byDate[d]=[];byDate[d].push(e);});
+      const dates=Object.keys(byDate).sort().reverse();
+      return dates.map(d=>`<div style="margin-bottom:8px">
+        <div style="font-size:10px;color:var(--dm);font-weight:600;padding:3px 6px;background:var(--c2);border-radius:3px;margin-bottom:4px">${d} <span style="color:var(--tx)">${byDate[d].length}条</span></div>
+        ${byDate[d].map(rowHTML).join('')}
+      </div>`).join('');
+    };
+    // Last 3 trading days = last 3 unique dates in DATA (not calendar)
+    const recentDates=new Set(data.slice(-3).map(b=>b.d));
+    const recent=signalLog.filter(e=>recentDates.has(e.bd));
+    const buyCount=signalLog.filter(e=>e.type!=='S').length;
+    const sellCount=signalLog.filter(e=>e.type==='S').length;
     return`
     <div class="card" style="border-color:var(--gn)20">
-      <div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· 共${signalLog.length}条 · 用于核对触发当时市场上是否真有那个价格</span>
+      <div class="card-t">📜 信号日志 <span style="font-size:10px;color:var(--dm);font-weight:400">· ${buyCount}买 / ${sellCount}卖 · 用于核对触发当时市场上是否真有那个价格</span>
         <button onclick="clearSigLog('${STOCK_CODE}')" style="float:right;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">清空</button>
         <button onclick="dumpSigLog('${STOCK_CODE}')" style="float:right;margin-right:4px;background:none;border:1px solid var(--bd);color:var(--dm);font-size:9px;padding:2px 6px;border-radius:3px;cursor:pointer;font-family:inherit">导出JSON</button>
       </div>
-      <div style="max-height:280px;overflow-y:auto">
-      ${dates.map(d=>`
-        <div style="margin-bottom:8px">
-          <div style="font-size:10px;color:var(--dm);font-weight:600;padding:3px 6px;background:var(--c2);border-radius:3px;margin-bottom:4px">${d} <span style="color:var(--tx)">${byDate[d].length}条</span></div>
-          ${byDate[d].map(e=>{
-            const tm=e.bf?(e.bd.slice(5)+' (收盘)'):(e.ts?new Date(e.ts).toLocaleString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',month:'2-digit',day:'2-digit'}):'?');
-            const srcBg=e.bf?'#a78bfa15':e.live?'#34d39915':'#fb923c15';
-            const srcCol=e.bf?'var(--pu)':e.live?'var(--gn)':'var(--or)';
-            const srcLbl=e.bf?'📚回填':(e.live?'实时':'缓存')+'·'+e.src;
-            // Trigger-mode strategies fill at the limit price (trigP); other modes fill at close (px).
-            // The trigger fill is only realistic if the day's low actually touched trigP.
-            const isTrig=e.mode==='trigger'&&e.trigP;
-            const fillP=isTrig?e.trigP:e.px;
-            const fillLbl=isTrig?'限价':e.mode==='next_open'?'T+1开':'收盘';
-            const trigOK=isTrig?e.lo<=e.trigP:true;
-            return`<div style="font-size:11px;padding:4px 6px;border-bottom:1px solid #1e294020;display:flex;flex-wrap:wrap;gap:8px;align-items:center;${e.bf?'opacity:0.85':''}">
-              <span class="mono" style="font-size:9px;color:var(--dm);min-width:80px">${tm}</span>
-              <span style="flex:1;min-width:140px"><b style="color:var(--gn)">买</b> ${e.n}</span>
-              <span class="mono" style="color:var(--yl);font-weight:700" title="${isTrig?(trigOK?'当日低'+e.lo+'已穿过触发价，限价单可成交':'当日低'+e.lo+'未触及触发价，限价单未成交'):''}">${trigOK?'@':'⚠️@'}${fillP}<span style="font-size:9px;color:var(--dm);font-weight:400"> ${fillLbl}</span></span>
-              <span class="mono" style="font-size:9px;color:var(--dm)" title="收盘价 ${e.px}">收${e.px}·高${e.hi}/低${e.lo}</span>
-              <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${srcBg};color:${srcCol}">${srcLbl}</span>
-              <span style="font-size:9px;color:var(--dm)">3日胜率${e.wr}%</span>
-            </div>`;
-          }).join('')}
-        </div>
-      `).join('')}
+      <div style="display:flex;gap:4px;margin-bottom:8px">
+        <button id="sigbtn-recent" onclick="sigTab('recent')" style="flex:1;background:var(--ac);color:#fff;border:none;border-radius:5px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">最近3天 (${recent.length})</button>
+        <button id="sigbtn-all" onclick="sigTab('all')" style="flex:1;background:var(--c2);color:var(--dm);border:none;border-radius:5px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">全部 (${signalLog.length})</button>
+      </div>
+      <div id="sigtab-recent">
+        <div style="max-height:280px;overflow-y:auto">${renderGrouped(recent)}</div>
+      </div>
+      <div id="sigtab-all" style="display:none">
+        <div style="max-height:480px;overflow-y:auto">${renderGrouped(signalLog)}</div>
       </div>
       <div style="font-size:9px;color:var(--dm);margin-top:6px;padding:6px 8px;background:var(--c2);border-radius:4px;line-height:1.5">
-        <b>核对方法</b>：日志里的 <b>@价</b> 是<b>记录瞬间页面显示的当日收盘价</b>，<b>高/低</b>是当日 K 线极值范围 — 你可以去 Wind / 同花顺对比同一时间戳的实际行情。<br>
-        <b>同一信号在同一日只记一次</b> · 新交易日同名信号会重新记 · 最多保留 200 条
+        <b>核对方法</b>：买入 trigger 模式显示<b>限价单成交价</b>，其它模式 (含卖出) 显示<b>当日收盘</b>，<b>收/高/低</b>是当日 K 线极值 — 可以去 Wind / 同花顺对比同一时间戳的实际行情。<br>
+        <b>同一信号在同一日只记一次</b>（买卖独立计） · 新交易日同名会重新记 · 最多保留 200 条
       </div>
     </div>`;
   })()}
