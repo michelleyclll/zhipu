@@ -335,6 +335,61 @@ async function fdIntraday(){
   }catch(e){}}
   return null;
 }
+
+// === Ch 19.4: Hang Seng Index fetcher + 4-tier status ===
+// HSI gives the market backdrop. When the market is dumping (-2% or below 5-day MA),
+// individual-stock signals tend to fail — we mark it 🔴 risk and gate buy signals.
+async function fdHSI(){
+  // Try Tencent first (most reliable for HK indices), then Yahoo
+  const tencentUrl='https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hkHSI,day,,,30,qfq';
+  for(const px of PX){
+    try{
+      const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),5000);
+      const r=await fetch(px(tencentUrl),{signal:ctrl.signal}).finally(()=>clearTimeout(tmr));
+      if(!r.ok)continue;
+      const j=await r.json();
+      const raw=j?.data?.hkHSI?.qfqday||j?.data?.hkHSI?.day;
+      if(!raw?.length)continue;
+      const d=raw.map(r=>({d:r[0],o:+r[1],c:+r[2],h:+r[3],l:+r[4]})).filter(x=>x.c>0);
+      if(d.length>=6)return d;
+    }catch(e){}
+  }
+  // Yahoo fallback
+  const yurl='https://query1.finance.yahoo.com/v8/finance/chart/%5EHSI?range=1mo&interval=1d';
+  for(const px of PX){
+    try{
+      const ctrl=new AbortController(),tmr=setTimeout(()=>ctrl.abort(),5000);
+      const r=await fetch(px(yurl),{signal:ctrl.signal,headers:{'X-Requested-With':'XMLHttpRequest'}}).finally(()=>clearTimeout(tmr));
+      if(!r.ok)continue;
+      const j=await r.json(),res=j.chart?.result?.[0];
+      if(!res)continue;
+      const ts=res.timestamp,q=res.indicators.quote[0],d=[];
+      for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;
+        d.push({d:new Date(ts[i]*1000).toISOString().slice(0,10),o:+(q.open[i]||q.close[i]).toFixed(2),h:+(q.high[i]||q.close[i]).toFixed(2),l:+(q.low[i]||q.close[i]).toFixed(2),c:+q.close[i].toFixed(2)});}
+      if(d.length>=6)return d;
+    }catch(e){}
+  }
+  return null;
+}
+
+// Compute HSI status from daily OHLC array
+function hsiStatus(hsi){
+  if(!hsi||hsi.length<6)return{level:'unknown',color:'var(--dm)',label:'⚪ 数据不足',chg:0,close:0,filterBuys:false};
+  const last=hsi[hsi.length-1],prev=hsi[hsi.length-2];
+  const chg=(last.c-prev.c)/prev.c*100;
+  // 5-day SMA from last 5 days
+  const last5=hsi.slice(-5);
+  const ma5=last5.reduce((s,x)=>s+x.c,0)/5;
+  const aboveMA5=last.c>ma5;
+  // 4-tier classification per spec 19.4
+  let level,color,label,confMul=1,filterBuys=false;
+  if(chg<=-2||(!aboveMA5&&chg<-1)){level='risk';color='var(--rd)';label='🔴 风险';filterBuys=true;confMul=0;}
+  else if(chg<=-1){level='weak';color='var(--or)';label='🟠 偏弱';confMul=0.7;}
+  else if(chg>=1&&aboveMA5){level='strong';color='var(--gn)';label='🟢 强势';}
+  else{level='neutral';color='var(--yl)';label='🟡 中性';}
+  return{level,color,label,chg,close:last.c,ma5,aboveMA5,confMul,filterBuys};
+}
+
 function calcID(d){
   const p=20;
   const ma20=d.map((_,i)=>i<p-1?null:d.slice(i-p+1,i+1).reduce((s,x)=>s+x.c,0)/p);
@@ -957,7 +1012,25 @@ function go(data,live){
   const cr={r:I.r14[n],dif:I.mc.dif[n],dea:I.mc.dea[n],bar:I.mc.bar[n],bi5:I.bi5[n],bi10:I.bi10[n],
     ma5:I.m5[n],ma10:I.m10[n],ma20:I.m20[n],ma30:I.m30[n],kK:I.kd[n].k,kD:I.kd[n].d,kJ:I.kd[n].j,
     b10l:I.b10[n].l,b10u:I.b10[n].u,vr:n>=10?data[n].v/(data.slice(n-10,n).reduce((s,x)=>s+x.v,0)/10):1};
-  const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT),sr=[...R].sort((a,b)=>(b.hr[3]?.wr||0)-(a.hr[3]?.wr||0));
+  const tB=R.filter(r=>r.bT),tS=R.filter(r=>r.sT);
+  // === Ch 19.2: confidence score ===
+  // Formula: 胜率 × log10(样本量+1) × max(期望值, 0.01)
+  // Negative expectancy → confidence forced to 0 (per spec).
+  // Expectancy here = h3.ar × 100 (avg return per 3-day-hold trade, % form).
+  const confScore=r=>{
+    const h3=r.hr[3];if(!h3||r.bc===0)return 0;
+    const exp=h3.ar*100;
+    if(exp<=0)return 0;
+    return h3.wr*Math.log10(r.bc+1)*Math.max(exp,0.01);
+  };
+  R.forEach(r=>{r.conf=confScore(r);});
+  // === Ch 19.1: sample-size split (≥5 vs <5) ===
+  // Within each group, sort by confidence (not raw WR) so 1-sample 100% doesn't win.
+  const srValid=R.filter(r=>r.bc>=5).sort((a,b)=>b.conf-a.conf);
+  const srExp=R.filter(r=>r.bc<5&&r.bc>0).sort((a,b)=>b.conf-a.conf);
+  const srNoSig=R.filter(r=>r.bc===0);
+  // Keep `sr` reference for any other downstream code: ordered valid + experimental
+  const sr=[...srValid,...srExp,...srNoSig];
   // Trend state
   const maRising=cr.ma20&&I.m20[Math.max(n-5,0)]&&cr.ma20>I.m20[Math.max(n-5,0)];
   const aboveMA20=L.c>cr.ma20;
@@ -1154,6 +1227,76 @@ function go(data,live){
     <span id="refresh-lbl" class="mono" style="font-size:10px;color:var(--dm)">5:00</span>
     <button class="btn" style="background:${_notifPermission==='granted'?'#34d39920':'#fbbf2420'};color:${_notifPermission==='granted'?'var(--gn)':'var(--yl)'};font-size:10px;padding:4px 8px" onclick="initNotif();this.textContent='✓ 已开启';this.style.color='var(--gn)'">${_notifPermission==='granted'?'🔔 通知ON':'🔔 开启通知'}</button>
     <button class="btn bg" onclick="rl()">🔄</button></div></div>
+
+  ${(()=>{
+    // === Ch 19.3: Top decision card — 5-second-glance recommendation ===
+    // Combines: position state, trend, BIAS5, lockup countdown (2513), HSI status (19.4),
+    // and signal availability. Produces ONE recommendation with color-coded background.
+    const hsi=window._hsiState;
+    const bias5Val=cr.bi5||0;
+    // Lockup days for 2513 only
+    let lockDays=null,lockLabel='';
+    if(STOCK_CODE==='2513'){
+      const today=new Date();
+      const ld=new Date(LOCKUP.batches[0].date);
+      lockDays=Math.ceil((ld-today)/(1000*60*60*24));
+      lockLabel=`解禁倒数 ${lockDays}天`;
+    }
+    // Highest-confidence valid buy signal firing today
+    const validBuyToday=tB.filter(r=>r.bc>=5&&r.conf>=3).sort((a,b)=>b.conf-a.conf)[0];
+    const anyBuyToday=tB[0];
+    // Decision logic per spec 19.3 rules
+    let rec='',recColor='var(--dm)',recBg='var(--c2)',recIcon='⏸️';
+    if(autoPos){
+      // Holding
+      if(L.c>=autoPos.tpTarget){rec='达成止盈目标，建议获利了结 — 当前 +'+autoPos.curPnl.toFixed(1)+'% 已超过 ATR TP';recColor='var(--gn)';recBg='#34d39915';recIcon='🎯';}
+      else if(L.c<=autoPos.slTarget){rec='触发止损线，立即清仓 — 当前 '+autoPos.curPnl.toFixed(1)+'% 已破 ATR SL';recColor='var(--rd)';recBg='#f8717115';recIcon='🚨';}
+      else if(bias5Val>25){rec='极端超涨 (BIAS5='+bias5Val.toFixed(1)+'%)，考虑分批减仓或上移 SL 锁利';recColor='var(--yl)';recBg='#fbbf2410';recIcon='⚠️';}
+      else if(lockDays!==null&&lockDays<14&&lockDays>0){rec='解禁前两周 ('+lockDays+'天)，建议主动减仓避险 — 历史上解禁前都有抛压';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
+      else{rec='持仓 '+autoPos.holdDays+'天，浮盈 '+(autoPos.curPnl>=0?'+':'')+autoPos.curPnl.toFixed(1)+'%，距 TP '+((autoPos.tpTarget-L.c)/L.c*100).toFixed(1)+'% 距 SL '+((L.c-autoPos.slTarget)/L.c*100).toFixed(1)+'%，按计划持有';recColor='var(--ac)';recBg='#5ba3ff10';recIcon='📍';}
+    }else{
+      // Empty position
+      if(hsi&&hsi.level==='risk'){rec='大盘 HSI '+hsi.chg.toFixed(1)+'% 风险状态 — 过滤所有买入信号，避免入场';recColor='var(--rd)';recBg='#f8717115';recIcon='⛔';}
+      else if(trendState==='down'){rec='当前股票 🔴 下降趋势 — 避免逆势买入，等趋势翻转';recColor='var(--rd)';recBg='#f8717115';recIcon='⛔';}
+      else if(lockDays!==null&&lockDays<14&&lockDays>0){rec='解禁临近 ('+lockDays+'天)，建议等待砸盘后入场 — 当前买入承担解禁风险';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
+      else if(bias5Val>20){rec='价格偏离 MA5 过大 (BIAS5='+bias5Val.toFixed(1)+'%)，等回调到 MA20 附近再入场';recColor='var(--yl)';recBg='#fbbf2410';recIcon='⏸️';}
+      else if(validBuyToday){
+        const trigInfo=validBuyToday.entryType==='trigger'?` · 限价单挂 ${(validBuyToday.tr.filter(t=>t.t==='B').slice(-1)[0]?.trigP||L.c).toFixed(0)}`:'';
+        rec='✅ '+validBuyToday.n+' 触发 (置信度'+validBuyToday.conf.toFixed(1)+', '+validBuyToday.bc+'笔)'+trigInfo+(hsi&&hsi.level==='weak'?' · ⚠️大盘偏弱，置信度需降权':'');
+        recColor='var(--gn)';recBg='#34d39915';recIcon='✅';
+      }
+      else if(anyBuyToday&&anyBuyToday.bc<5){rec='今日有买入信号 ('+anyBuyToday.n+')，但样本不足 ('+anyBuyToday.bc+'笔) — 不建议执行';recColor='var(--or)';recBg='#fb923c10';recIcon='⚗️';}
+      else{rec='观望，等待清晰信号 (有效买入信号 + 趋势/大盘配合)';recColor='var(--dm)';recBg='var(--c2)';recIcon='⏸️';}
+    }
+    const sectorMate=STOCK_CODE==='2513'?'3317':null; // 智谱 ↔ 迅策
+    return`<div class="card" style="background:${recBg};border:2px solid ${recColor}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+        <div style="font-size:13px;font-weight:700;color:${recColor}">🎯 今日操作建议</div>
+        <div style="font-size:9px;color:var(--dm)">现状·趋势·波动·风险 综合 → 5秒决策</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin-bottom:8px;font-size:11px">
+        <div>现状: <b style="color:${autoPos?'var(--yl)':'var(--dm)'}">${autoPos?'持仓 '+autoPos.holdDays+'天 '+(autoPos.curPnl>=0?'+':'')+autoPos.curPnl.toFixed(1)+'%':'空仓'}</b></div>
+        <div>趋势: <b style="color:${trendColor}">${trendLabel}</b></div>
+        <div>波动: BIAS5 <b style="color:${bias5Val>15||bias5Val<-15?'var(--rd)':bias5Val>8||bias5Val<-8?'var(--yl)':'var(--gn)'}">${bias5Val>=0?'+':''}${bias5Val.toFixed(1)}%</b></div>
+        <div>大盘: ${hsi?`HSI <span class="mono">${hsi.close.toFixed(0)}</span> <b style="color:${hsi.color}">${hsi.chg>=0?'+':''}${hsi.chg.toFixed(2)}% ${hsi.label}</b>`:'<span style="color:var(--dm)">⏳ HSI 加载中...</span>'}</div>
+        ${lockDays!==null?`<div>风险: <b style="color:${lockDays<14?'var(--rd)':lockDays<30?'var(--or)':'var(--dm)'}">${lockLabel}</b></div>`:''}
+      </div>
+      <div style="padding:10px 12px;background:${recColor==='var(--dm)'?'var(--bg)':'#00000030'};border-radius:6px;border-left:4px solid ${recColor};font-size:13px;font-weight:600;color:${recColor}">
+        ${recIcon} ${rec}
+      </div>
+      ${autoPos?`<div style="margin-top:6px;font-size:10px;color:var(--dm);display:flex;gap:12px;flex-wrap:wrap">
+        <span>入场 <b class="mono">${autoPos.entryP.toFixed(0)}</b></span>
+        <span>TP <b class="mono" style="color:var(--gn)">${autoPos.tpTarget.toFixed(0)}</b> (+${autoPos.tpPct.toFixed(1)}%)</span>
+        <span>SL <b class="mono" style="color:var(--rd)">${autoPos.slTarget.toFixed(0)}</b> (-${autoPos.slPct.toFixed(1)}%)</span>
+        <span>ATR(买入当天) <b class="mono">${autoPos.atrAtBuy.toFixed(1)}</b></span>
+      </div>`:validBuyToday?`<div style="margin-top:6px;font-size:10px;color:var(--dm);display:flex;gap:12px;flex-wrap:wrap">
+        <span>参考入场 <b class="mono" style="color:var(--gn)">${L.c.toFixed(0)}</b></span>
+        <span>建议 TP <b class="mono" style="color:var(--gn)">${(L.c*(1+autoTP)).toFixed(0)}</b> (+${(autoTP*100).toFixed(1)}%)</span>
+        <span>建议 SL <b class="mono" style="color:var(--rd)">${(L.c*(1-autoSL)).toFixed(0)}</b> (-${(autoSL*100).toFixed(1)}%)</span>
+        <span>依据 <b style="color:var(--yl)">${validBuyToday.n}</b> 3日胜率 ${((validBuyToday.hr[3]?.wr||0)*100).toFixed(0)}%</span>
+      </div>`:''}
+    </div>`;
+  })()}
 
   <div id="ap" style="display:none" class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
     <div><div style="font-size:10px;color:var(--dm);margin-bottom:3px">收盘*</div><input type="number" id="ic"></div>
@@ -1369,9 +1512,16 @@ function go(data,live){
 
   <div class="c6">
   <!-- ====== STRATEGY RANKING WITH EXPANDABLE DETAILS ====== -->
-  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 固定持有1/3/5日(参考) · 实际操作请看对决TP/SL${dataSuff!=='ok'?' · ⚠️'+dLen+'天数据':''}</span></div><div style="overflow-x:auto"><table>
-    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>盘中↓</th><th>今</th></tr></thead>
-    <tbody>${sr.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0,amx:0,amd:0},h5=r.hr[5]||{wr:0,ar:0};
+  <div class="card"><div class="card-t">🏆 策略排行 <span style="font-size:10px;color:var(--dm);font-weight:400">${PARAMS.entry_mode==='next_open'?'T+1开盘买入':PARAMS.entry_mode==='trigger'?'盘中触发/尾盘买入':'当日尾盘买入'} · 固定持有1/3/5日(参考) · 实际操作请看对决TP/SL${dataSuff!=='ok'?' · ⚠️'+dLen+'天数据':''}</span></div>
+    <div style="font-size:10px;color:var(--dm);padding:6px 8px;background:var(--c2);border-radius:4px;margin-bottom:8px;line-height:1.5">
+      <b style="color:var(--yl)">📐 置信度</b> = 胜率 × log10(样本量+1) × 期望值. <b>样本 ≥5 才统计有效</b>，<5 笔的放下方"实验性"区，仅供观察。<br>
+      ⭐⭐⭐⭐⭐ ≥10 · ⭐⭐⭐⭐ ≥6 · ⭐⭐⭐ ≥3 · ⭐⭐ ≥1 · ⭐ <1 (默认按置信度排序)
+    </div>
+    ${srValid.length===0?`<div style="padding:12px;text-align:center;color:var(--or);font-size:11px;background:#fb923c08;border-radius:6px">⚠️ <b>没有策略达到样本≥5</b>的统计阈值 — 当前股票历史数据太少，所有信号都不可靠。建议观望或换股票。</div>`:''}
+    ${srValid.length>0?`<div style="font-size:11px;font-weight:700;color:var(--gn);margin-bottom:4px">🏆 有效策略 (样本 ≥5)</div>
+    <div style="overflow-x:auto"><table>
+    <thead><tr><th>#</th><th>策略</th><th>类别</th><th>次</th><th>1日</th><th>3日</th><th>5日</th><th>报酬</th><th>置信度</th><th>盘中↓</th><th>今</th></tr></thead>
+    <tbody>${srValid.map((r,i)=>{const h1=r.hr[1]||{wr:0},h3=r.hr[3]||{wr:0,ar:0,amx:0,amd:0},h5=r.hr[5]||{wr:0,ar:0};
       const detailId='sd'+i;
       // Build trade list for detail
       const buys=r.tr.filter(t=>t.t==='B');
@@ -1408,14 +1558,19 @@ function go(data,live){
         </div>`;
       }).join('');
 
+      // Stars + color from confidence
+      const cv=r.conf||0;
+      const stars=cv>=10?'⭐⭐⭐⭐⭐':cv>=6?'⭐⭐⭐⭐':cv>=3?'⭐⭐⭐':cv>=1?'⭐⭐':'⭐';
+      const confColor=cv>=10?'var(--gn)':cv>=6?'#86efac':cv>=3?'var(--yl)':cv>=1?'var(--or)':'var(--rd)';
       return`<tr class="str-row" onclick="toggleDetail('${detailId}',this)"><td style="color:var(--dm);font-weight:700">${i+1}</td><td style="font-weight:600">${r.n}${PARAMS.entry_mode==='trigger'&&r.entryType==='trigger'?' <span style="font-size:8px;padding:1px 4px;background:var(--ac);color:#fff;border-radius:3px">限价</span>':''}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
       <td class="mono" style="color:${cc(h1.wr)};font-weight:700">${(h1.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${cc(h3.wr)};font-weight:700">${(h3.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${cc(h5.wr)};font-weight:700">${(h5.wr*100).toFixed(0)}%</td>
       <td class="mono" style="color:${h3.ar>=0?'var(--gn)':'var(--rd)'}">${h3.ar>=0?'+':''}${(h3.ar*100).toFixed(1)}%</td>
+      <td class="mono" style="color:${confColor};font-weight:700" title="置信度=${cv.toFixed(2)}">${stars}<br><span style="font-size:9px;font-weight:400">${cv.toFixed(1)}</span></td>
       <td class="mono" style="color:var(--rd)">${((h3.amd||0)*100).toFixed(1)}%</td>
       <td>${r.bT?'<b style="color:var(--gn)">买</b>':r.sT?'<b style="color:var(--rd)">卖</b>':'—'}</td></tr>
-      <tr class="str-detail" id="${detailId}"><td colspan="10">
+      <tr class="str-detail" id="${detailId}"><td colspan="11">
         <div class="dt-grid">
           <div class="dt-box"><div class="dt-l">1日 胜率/报酬</div><b class="mono" style="color:${cc(h1.wr)}">${(h1.wr*100).toFixed(0)}%</b> / <span class="mono">${((h1.ar||0)*100).toFixed(1)}%</span>
             <div style="font-size:9px;color:var(--dm);margin-top:2px">盘中↑<span style="color:var(--gn)">${((h1.amx||0)*100).toFixed(1)}%</span> ↓<span style="color:var(--rd)">${((h1.amd||0)*100).toFixed(1)}%</span></div></div>
@@ -1428,7 +1583,22 @@ function go(data,live){
         </div>
         <div style="margin-top:8px;font-size:10px;color:var(--dm)">最近15笔买入明细 <span style="color:var(--ac)">信号日 · 收盘价 · 买入价(方式) · 持有1日(↑↓) · 3日(↑↓) · 5日(↑↓)</span></div>
         <div class="trade-list">${tradeRows||'<div style="color:var(--dm);padding:4px">无买入记录</div>'}</div>
-      </td></tr>`;}).join('')}</tbody></table></div></div></div></div>
+      </td></tr>`;}).join('')}</tbody></table></div>`:''}
+    ${srExp.length>0?`
+    <div style="font-size:11px;font-weight:700;color:var(--or);margin:12px 0 4px">⚗️ 实验性策略 (样本不足 &lt;5，仅供观察)</div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>策略</th><th>类别</th><th>次</th><th>3日胜率</th><th>3日报酬</th><th>置信度</th><th>今</th></tr></thead>
+      <tbody>${srExp.map(r=>{
+        const h3=r.hr[3]||{wr:0,ar:0};
+        const cv=r.conf||0;
+        const stars=cv>=1?'⭐⭐':'⭐';
+        return`<tr style="opacity:0.7"><td style="font-weight:600">${r.n}</td><td style="color:var(--dm)">${r.c}</td><td class="mono">${r.bc}</td>
+          <td class="mono" style="color:var(--dm)">${(h3.wr*100).toFixed(0)}%<span style="font-size:8px;color:var(--or)"> ⚠️小样本</span></td>
+          <td class="mono" style="color:var(--dm)">${h3.ar>=0?'+':''}${(h3.ar*100).toFixed(1)}%</td>
+          <td class="mono" style="color:var(--or)">${stars} ${cv.toFixed(1)}</td>
+          <td>${r.bT?'<b style="color:var(--gn)">买</b>':r.sT?'<b style="color:var(--rd)">卖</b>':'—'}</td></tr>`;
+      }).join('')}</tbody></table></div>`:''}
+    </div></div></div>
 
   <!-- ====== HIGH-FREQUENCY TRADING PANEL ====== -->
   ${(()=>{
@@ -1868,8 +2038,14 @@ function go(data,live){
       · <b>成本0.2% + 滑点0.1%</b> — 排行/对决/HF/持仓全模块统一扣除<br>
       · <b>悲观同K判定</b> — TP+SL同K触发一律判SL<br>
       · <b>每笔ATR独立TP/SL</b> — 日线: TP=买价+2×ATR(买入当天) · SL=买价-1.5×ATR(买入当天) · 5分钟: TP=15×ATR · SL=10×ATR — 不是用今天ATR套所有历史<br>
-      · <b>信号反转早退</b> — 买入策略的s(i)触发收盘出场<br>
+      · <b>信号反转早退</b> — 买入策略的s(i)触发收盘出场 (自身/团队双模式 A/B 测试)<br>
+      · <b>对称卖出信号</b> — 形态/量价/组合 16 个策略 buy/sell 全配对<br>
       · <b>王者自选队</b> — 70/30训练/测试分割，自动挑选两边都正期望的策略<br>
+      · <b>跨股票冠军记忆</b> — localStorage 累积每只股的通过名单，自动找出 ≥2 股通过的真 alpha<br>
+      · <b>v2: 样本量过滤</b> (Ch19.1) — 排行表 ≥5 笔才入"有效策略"，<5 移到"实验性"区<br>
+      · <b>v2: 置信度打分</b> (Ch19.2) — 胜率×log10(笔数+1)×期望值 综合排序，避免 1 笔 100% 误导<br>
+      · <b>v2: 顶部决策卡</b> (Ch19.3) — 整合持仓/趋势/波动/大盘/解禁 → 一句话建议<br>
+      · <b>v2: 大盘指数过滤</b> (Ch19.4) — HSI -2% 或破 5 日均线 → 过滤所有买入信号<br>
       · <b>过拟合检测</b> — 训练集亮眼但测试集翻车的策略自动淘汰并计数<br>
       · <b>20天/20根强制退出</b> — 防无限持仓<br><br>
       <b style="color:var(--rd)">⚠️ 仍存在:</b><br>
@@ -1882,6 +2058,15 @@ function go(data,live){
     </div></div>`;
 
   setTimeout(()=>{drawChart(currentTF);drawEqChart();},80);
+  // Fetch HSI in background (Ch 19.4) — cached for 5 minutes to avoid repeat fetches
+  if(!window._hsiState||Date.now()-window._hsiFetchAt>300000){
+    (async()=>{
+      const hsi=await fdHSI();
+      if(hsi){window._hsi=hsi;window._hsiState=hsiStatus(hsi);window._hsiFetchAt=Date.now();
+        // Re-render to pick up HSI status in the decision card
+        try{go(data,live);}catch(e){}}
+    })();
+  }
   // Fetch intraday data and news in background
   if(!window._hfRendered){
     (async()=>{const id=await fdIntraday();if(id){ID=id;
