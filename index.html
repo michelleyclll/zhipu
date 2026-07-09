@@ -1234,13 +1234,22 @@ function go(data,live){
     // and signal availability. Produces ONE recommendation with color-coded background.
     const hsi=window._hsiState;
     const bias5Val=cr.bi5||0;
-    // Lockup days for 2513 only
-    let lockDays=null,lockLabel='';
+    // === Lockup countdown (2513 only) — auto-picks the next upcoming batch ===
+    // Rule: iterate LOCKUP.batches in order, pick the first one with date > today.
+    // If all batches have passed, show "无近期解禁风险".
+    let lockDays=null,lockLabel='',lockBatch=null;
     if(STOCK_CODE==='2513'){
-      const today=new Date();
-      const ld=new Date(LOCKUP.batches[0].date);
-      lockDays=Math.ceil((ld-today)/(1000*60*60*24));
-      lockLabel=`解禁倒数 ${lockDays}天`;
+      const today=new Date();today.setHours(0,0,0,0);
+      const next=LOCKUP.batches.find(b=>new Date(b.date)>today);
+      if(next){
+        lockBatch=next;
+        const ld=new Date(next.date);
+        lockDays=Math.ceil((ld-today)/(1000*60*60*24));
+        lockLabel=`${next.label||'解禁'} 倒数 ${lockDays}天`;
+      }else{
+        lockDays=-1; // sentinel: no upcoming lockup
+        lockLabel='✅ 无近期解禁风险';
+      }
     }
     // Highest-confidence valid buy signal firing today
     const validBuyToday=tB.filter(r=>r.bc>=5&&r.conf>=3).sort((a,b)=>b.conf-a.conf)[0];
@@ -1252,13 +1261,13 @@ function go(data,live){
       if(L.c>=autoPos.tpTarget){rec='达成止盈目标，建议获利了结 — 当前 +'+autoPos.curPnl.toFixed(1)+'% 已超过 ATR TP';recColor='var(--gn)';recBg='#34d39915';recIcon='🎯';}
       else if(L.c<=autoPos.slTarget){rec='触发止损线，立即清仓 — 当前 '+autoPos.curPnl.toFixed(1)+'% 已破 ATR SL';recColor='var(--rd)';recBg='#f8717115';recIcon='🚨';}
       else if(bias5Val>25){rec='极端超涨 (BIAS5='+bias5Val.toFixed(1)+'%)，考虑分批减仓或上移 SL 锁利';recColor='var(--yl)';recBg='#fbbf2410';recIcon='⚠️';}
-      else if(lockDays!==null&&lockDays<14&&lockDays>0){rec='解禁前两周 ('+lockDays+'天)，建议主动减仓避险 — 历史上解禁前都有抛压';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
+      else if(lockBatch&&lockDays<14&&lockDays>0){rec=(lockBatch.label||'解禁')+'前两周 ('+lockDays+'天)，建议主动减仓避险 — 历史上解禁前都有抛压';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
       else{rec='持仓 '+autoPos.holdDays+'天，浮盈 '+(autoPos.curPnl>=0?'+':'')+autoPos.curPnl.toFixed(1)+'%，距 TP '+((autoPos.tpTarget-L.c)/L.c*100).toFixed(1)+'% 距 SL '+((L.c-autoPos.slTarget)/L.c*100).toFixed(1)+'%，按计划持有';recColor='var(--ac)';recBg='#5ba3ff10';recIcon='📍';}
     }else{
       // Empty position
       if(hsi&&hsi.level==='risk'){rec='大盘 HSI '+hsi.chg.toFixed(1)+'% 风险状态 — 过滤所有买入信号，避免入场';recColor='var(--rd)';recBg='#f8717115';recIcon='⛔';}
       else if(trendState==='down'){rec='当前股票 🔴 下降趋势 — 避免逆势买入，等趋势翻转';recColor='var(--rd)';recBg='#f8717115';recIcon='⛔';}
-      else if(lockDays!==null&&lockDays<14&&lockDays>0){rec='解禁临近 ('+lockDays+'天)，建议等待砸盘后入场 — 当前买入承担解禁风险';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
+      else if(lockBatch&&lockDays<14&&lockDays>0){rec=(lockBatch.label||'解禁')+'临近 ('+lockDays+'天)，建议等待砸盘后入场 — 当前买入承担解禁风险';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
       else if(bias5Val>20){rec='价格偏离 MA5 过大 (BIAS5='+bias5Val.toFixed(1)+'%)，等回调到 MA20 附近再入场';recColor='var(--yl)';recBg='#fbbf2410';recIcon='⏸️';}
       else if(validBuyToday){
         const trigInfo=validBuyToday.entryType==='trigger'?` · 限价单挂 ${(validBuyToday.tr.filter(t=>t.t==='B').slice(-1)[0]?.trigP||L.c).toFixed(0)}`:'';
@@ -1279,7 +1288,7 @@ function go(data,live){
         <div>趋势: <b style="color:${trendColor}">${trendLabel}</b></div>
         <div>波动: BIAS5 <b style="color:${bias5Val>15||bias5Val<-15?'var(--rd)':bias5Val>8||bias5Val<-8?'var(--yl)':'var(--gn)'}">${bias5Val>=0?'+':''}${bias5Val.toFixed(1)}%</b></div>
         <div>大盘: ${hsi?`HSI <span class="mono">${hsi.close.toFixed(0)}</span> <b style="color:${hsi.color}">${hsi.chg>=0?'+':''}${hsi.chg.toFixed(2)}% ${hsi.label}</b>`:'<span style="color:var(--dm)">⏳ HSI 加载中...</span>'}</div>
-        ${lockDays!==null?`<div>风险: <b style="color:${lockDays<14?'var(--rd)':lockDays<30?'var(--or)':'var(--dm)'}">${lockLabel}</b></div>`:''}
+        ${lockDays!==null?`<div>风险: <b style="color:${lockDays===-1?'var(--gn)':lockDays<14?'var(--rd)':lockDays<30?'var(--or)':'var(--dm)'}">${lockLabel}</b></div>`:''}
       </div>
       <div style="padding:10px 12px;background:${recColor==='var(--dm)'?'var(--bg)':'#00000030'};border-radius:6px;border-left:4px solid ${recColor};font-size:13px;font-weight:600;color:${recColor}">
         ${recIcon} ${rec}
