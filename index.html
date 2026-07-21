@@ -1254,14 +1254,40 @@ function go(data,live){
     // Highest-confidence valid buy signal firing today
     const validBuyToday=tB.filter(r=>r.bc>=5&&r.conf>=3).sort((a,b)=>b.conf-a.conf)[0];
     const anyBuyToday=tB[0];
-    // Decision logic per spec 19.3 rules
+    // Decision logic per spec 19.3 rules + expanded 持仓中 branches
     let rec='',recColor='var(--dm)',recBg='var(--c2)',recIcon='⏸️';
     if(autoPos){
-      // Holding
+      // Nearest overhead resistance among moving averages still above current price
+      const overhead=[{n:'MA5',v:cr.ma5},{n:'MA10',v:cr.ma10},{n:'MA20',v:cr.ma20},{n:'MA30',v:cr.ma30}]
+        .filter(x=>x.v&&x.v>L.c).sort((a,b)=>a.v-b.v)[0];
+      // Breakeven-plus-slippage — the natural place to move SL once profitable
+      const breakevenSL=Math.round(autoPos.entryP*1.002);
+      const halfProfitSL=Math.round((autoPos.entryP+L.c)/2);
       if(L.c>=autoPos.tpTarget){rec='达成止盈目标，建议获利了结 — 当前 +'+autoPos.curPnl.toFixed(1)+'% 已超过 ATR TP';recColor='var(--gn)';recBg='#34d39915';recIcon='🎯';}
       else if(L.c<=autoPos.slTarget){rec='触发止损线，立即清仓 — 当前 '+autoPos.curPnl.toFixed(1)+'% 已破 ATR SL';recColor='var(--rd)';recBg='#f8717115';recIcon='🚨';}
       else if(bias5Val>25){rec='极端超涨 (BIAS5='+bias5Val.toFixed(1)+'%)，考虑分批减仓或上移 SL 锁利';recColor='var(--yl)';recBg='#fbbf2410';recIcon='⚠️';}
       else if(lockBatch&&lockDays<14&&lockDays>0){rec=(lockBatch.label||'解禁')+'前两周 ('+lockDays+'天)，建议主动减仓避险 — 历史上解禁前都有抛压';recColor='var(--or)';recBg='#fb923c15';recIcon='⏰';}
+      // NEW: downtrend + profit → lock gains, don't ride hoping for TP
+      else if(trendState==='down'&&autoPos.curPnl>0){
+        const resistTxt=overhead?` · 阻力位 ${overhead.n}=${overhead.v.toFixed(0)}`:'';
+        rec='🔻 下降趋势中反弹 — 主动锁利: 手动移 SL 到买入价 <b>'+breakevenSL+'</b> 保本' + (overhead?`, 触及 <b>${overhead.v.toFixed(0)}</b> (${overhead.n}) 时减仓 50%`:'') + ' · 别指望 TP ' + autoPos.tpTarget.toFixed(0);
+        recColor='var(--or)';recBg='#fb923c15';recIcon='🔻';
+      }
+      // NEW: downtrend + loss → plan exit on the next bounce back to entry
+      else if(trendState==='down'&&autoPos.curPnl<=0){
+        rec='🔻 下降趋势中被套 '+autoPos.curPnl.toFixed(1)+'% — 建议下次反弹回买入价 <b>'+autoPos.entryP.toFixed(0)+'</b> 附近清仓离场，别等原 SL '+autoPos.slTarget.toFixed(0)+' (太宽会把亏损放到 -'+autoPos.slPct.toFixed(0)+'%)';
+        recColor='var(--rd)';recBg='#f8717110';recIcon='🔻';
+      }
+      // NEW: thick profit far from TP → trail SL to lock in half
+      else if(autoPos.curPnl>15&&((autoPos.tpTarget-L.c)/L.c)>0.3){
+        rec='📈 利润较厚 +'+autoPos.curPnl.toFixed(1)+'% 但距 TP 还远 — 建议上移 SL 至 <b>'+halfProfitSL+'</b> 锁住一半浮盈 (原 SL '+autoPos.slTarget.toFixed(0)+' 太宽已无意义)';
+        recColor='var(--gn)';recBg='#34d39910';recIcon='📈';
+      }
+      // NEW: stale position with no direction
+      else if(autoPos.holdDays>5&&Math.abs(autoPos.curPnl)<3){
+        rec='🕘 持仓已 '+autoPos.holdDays+'天但只有 '+(autoPos.curPnl>=0?'+':'')+autoPos.curPnl.toFixed(1)+'% — 机会成本高，考虑清仓换股或切到有 ≥5笔样本的高置信策略';
+        recColor='var(--yl)';recBg='#fbbf2410';recIcon='🕘';
+      }
       else{rec='持仓 '+autoPos.holdDays+'天，浮盈 '+(autoPos.curPnl>=0?'+':'')+autoPos.curPnl.toFixed(1)+'%，距 TP '+((autoPos.tpTarget-L.c)/L.c*100).toFixed(1)+'% 距 SL '+((L.c-autoPos.slTarget)/L.c*100).toFixed(1)+'%，按计划持有';recColor='var(--ac)';recBg='#5ba3ff10';recIcon='📍';}
     }else{
       // Empty position
